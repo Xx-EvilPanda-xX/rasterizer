@@ -115,6 +115,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7a81dae078cea95a014a339291cec439d2f232ebe854a9d672b796c6afafa9b7"
 
 [[package]]
+name = "dyn_array"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a8fbc2e230f93d5a8d7ddd68691c4e514f450a4919b9ad9bca7da6414fe8d960"
+
+[[package]]
 name = "either"
 version = "1.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -406,6 +412,7 @@ dependencies = [
 name = "rasterizer"
 version = "0.1.0"
 dependencies = [
+ "dyn_array",
  "image",
 ]
 
