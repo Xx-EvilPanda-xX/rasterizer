@@ -118,8 +118,8 @@ fn rasterize(buf: &mut RgbImage, mut tri: Triangle, dims: (u32, u32)) {
     for i in 0..2 {
         let (start_y, end_y) = match i {
             // add one to start_y becuase the first scanline is a little weird
-            0 => (tri.a.y as u32 + 1, tri.b.y as u32),
-            1 => (tri.b.y as u32, tri.c.y as u32),
+            0 => (tri.a.y.ceil() as u32, tri.b.y.ceil() as u32),
+            1 => (tri.b.y.ceil() as u32, tri.c.y.ceil() as u32),
             _ => unreachable!(),
         };
 
@@ -130,8 +130,8 @@ fn rasterize(buf: &mut RgbImage, mut tri: Triangle, dims: (u32, u32)) {
                 _ => unreachable!(),
             };
 
-            let mut start_x = start_x as u32;
-            let mut end_x = end_x as u32;
+            let mut start_x = start_x.round() as u32;
+            let mut end_x = end_x.round() as u32;
             if start_x > end_x {
                 swap(&mut start_x, &mut end_x);
             }
@@ -180,9 +180,9 @@ fn get_color(tri: &Triangle, x: u32, y: u32) -> [u8; 3] {
     let a = [tri.color_a[0] as f32, tri.color_a[1] as f32,tri.color_a[2] as f32];
     let b = [tri.color_b[0] as f32, tri.color_b[1] as f32,tri.color_b[2] as f32];
     let c = [tri.color_c[0] as f32, tri.color_c[1] as f32,tri.color_c[2] as f32];
-    [(a[0] * a_weight + b[0] * b_weight + c[0] * c_weight) as u8,
-    (a[1] * a_weight + b[1] * b_weight + c[1] * c_weight) as u8,
-    (a[2] * a_weight + b[2] * b_weight + c[2] * c_weight) as u8]
+    [(a[0] * a_weight + b[0] * b_weight + c[0] * c_weight).round() as u8,
+    (a[1] * a_weight + b[1] * b_weight + c[1] * c_weight).round() as u8,
+    (a[2] * a_weight + b[2] * b_weight + c[2] * c_weight).round() as u8]
 }
 
 fn dist(a: Point, b: Point) -> f32 {
