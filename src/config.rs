@@ -5,6 +5,7 @@ use super::{Point, Triangle};
 pub struct Config {
     pub width: u32,
     pub height: u32,
+    pub clear_color: [u8; 3],
     pub fov: f64,
     pub n: f64,
     pub f: f64,
@@ -42,6 +43,7 @@ impl Config {
 
         let width = field("width", &mut img_config);
         let height = field("height", &mut img_config);
+        let clear_color = field("clear_color", &mut img_config);
         let fov = field("fov", &mut img_config);
         let n = field("n", &mut img_config);
         let f = field("f", &mut img_config);
@@ -66,6 +68,7 @@ impl Config {
         Self {
             width: width.parse().expect("Failed to parse width"),
             height: height.parse().expect("Failed to parse height"),
+            clear_color: parse_arr(clear_color),
             fov: fov.parse().expect("Failed to parse height"),
             n: n.parse().expect("Failed to parse n"),
             f: f.parse().expect("Failed to parse f"),

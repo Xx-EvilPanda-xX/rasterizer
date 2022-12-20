@@ -24,7 +24,7 @@ fn main() {
 
     let config = Config::new(&config_txt, obj_txt);
     let mut buf = Buffer {
-        color: RgbImage::new(config.width, config.height),
+        color: RgbImage::from_pixel(config.width, config.height, Rgb::from(config.clear_color)),
         depth: DynArray::new([config.width as usize, config.height as usize], 1.0),
     };
     let dims = (config.width, config.height);
@@ -328,7 +328,7 @@ fn vertex_shader(tri: &mut Triangle, model: &Mat4f, proj: &Mat4f, dims: (u32, u3
     tri.b = math::mul_point_matrix(&tri.b, model);
     tri.c = math::mul_point_matrix(&tri.c, model);
 
-    // primitive implementation of clipping (so z !>= 0 for perspective division)
+    // primitive implementation of clipping (so z !>= 0 for perspective division, otherwise weird stuff unfolds)
     if tri.a.z >= 0.0 || tri.b.z >= 0.0 || tri.c.z >= 0.0 {
         return false;
     }
