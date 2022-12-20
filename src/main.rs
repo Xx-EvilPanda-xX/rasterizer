@@ -8,51 +8,82 @@ use std::time::Instant;
 mod config;
 mod math;
 
-pub const FOV: f64 = 85.0;
-pub const N: f64 = 0.1;
-pub const F: f64 = 100.0;
-
 fn main() {
+    let args: Vec<_> = std::env::args().collect();
+    if args.len() != 2 && args.len() != 3 {
+        println!("USAGE: {} [out_name] OPTIONAL: [obj_name]", args[0]);
+        std::process::exit(-1);
+    }
+
     let config_txt = std::fs::read_to_string("config.txt").expect("Failed to located config.txt");
-    let config = Config::new(&config_txt);
+    let obj_txt = if args.len() == 3 {
+        Some(std::fs::read_to_string(&args[2]).expect("Failed to located obj file"))
+    } else {
+        None
+    };
+
+    let config = Config::new(&config_txt, obj_txt);
     let mut buf = Buffer {
         color: RgbImage::new(config.width, config.height),
         depth: DynArray::new([config.width as usize, config.height as usize], 1.0),
     };
     let dims = (config.width, config.height);
     let tri_count = config.triangles.len();
-    let matrices = get_matrices(dims);
+    let matrices = get_matrices(&config);
 
     let start = Instant::now();
-    for triangle in config.triangles {
+    for (i, triangle) in config.triangles.into_iter().enumerate() {
+        if i % 1000 == 0 {
+            println!("{:.2}% complete ({}/{} triangles rendered)", (i as f64 / tri_count as f64) * 100.0, i, tri_count);
+        }
         rasterize(&mut buf, triangle, &matrices.0, &matrices.1, dims);
     }
     println!("Finished rendering {} triangles in {} secs.", tri_count, Instant::now().duration_since(start).as_secs_f64());
 
-    let args: Vec<_> = std::env::args().collect();
-    if args.len() != 2 {
-        println!("USAGE: {} [out_name]", args[0]);
-        std::process::exit(-1);
-    }
+    image::imageops::flip_vertical_in_place(&mut buf.color);
     buf.color.save(args[1].clone() + ".png").expect("Failed to save image");
 }
 
-fn get_matrices(dims: (u32, u32)) -> (Mat4f, Mat4f) {
-    let mut cam = Mat4f::new();
+fn get_matrices(config: &Config) -> (Mat4f, Mat4f) {
+    let mut trans = Mat4f::new();
+    let mut rot_x = Mat4f::new();
+    let mut rot_y = Mat4f::new();
+    let mut rot_z = Mat4f::new();
 
-    let theta = -std::f64::consts::PI / 4.0;
-    cam.r1c1 = theta.cos();
-    cam.r1c2 = -theta.sin();
-    cam.r2c1 = theta.sin();
-    cam.r2c2 = theta.cos();
-    cam.r0c0 = 1.0;
-    cam.r1c3 = 0.0;
-    cam.r2c3 = -1.25;
+    let theta_x = config.rot_x.to_radians();
+    let theta_y = config.rot_y.to_radians();
+    let theta_z = config.rot_z.to_radians();
 
-    let perspective = math::get_perspective(FOV, dims.0 as f64 / dims.1  as f64, N, F);
+    trans[0][0] = config.scale;
+    trans[1][1] = config.scale;
+    trans[2][2] = config.scale;
+    trans[0][3] = config.trans_x;
+    trans[1][3] = config.trans_y;
+    trans[2][3] = config.trans_z;
+
+    rot_x[1][1] = theta_x.cos();
+    rot_x[1][2] = -theta_x.sin();
+    rot_x[2][1] = theta_x.sin();
+    rot_x[2][2] = theta_x.cos();
+
+    rot_y[2][2] = theta_y.cos();
+    rot_y[0][0] = theta_y.cos();
+    rot_y[0][2] = theta_y.sin();
+    rot_y[2][0] = -theta_y.sin();
+
+    rot_z[1][1] = theta_z.cos();
+    rot_z[0][0] = theta_z.cos();
+    rot_z[0][1] = -theta_z.sin();
+    rot_z[1][0] = theta_z.sin();
+
+    let mut model = math::mul_matrix_matrix(&trans, &rot_x);
+    model = math::mul_matrix_matrix(&model, &rot_y);
+    model = math::mul_matrix_matrix(&model, &rot_z);
+
+    let perspective = math::get_perspective(config.fov, config.width as f64 / config.height  as f64, config.n, config.f);
     let proj = math::frustum(&perspective);
 
-    (cam, proj)
+    (model, proj)
 }
 
 pub struct Triangle {
@@ -97,8 +128,10 @@ struct Buffer {
     depth: DynArray<f64, 2>,
 }
 
-fn rasterize(buf: &mut Buffer, mut tri: Triangle, cam: &Mat4f, proj: &Mat4f, dims: (u32, u32)) {
-    vertex_shader(&mut tri, cam, proj, dims);
+fn rasterize(buf: &mut Buffer, mut tri: Triangle, model: &Mat4f, proj: &Mat4f, dims: (u32, u32)) {
+    if !vertex_shader(&mut tri, model, proj, dims) {
+        return;
+    };
     sort_tri_points_y(&mut tri);
 
     fn top_scanline(tri: &Triangle, y: u32) -> (f64, f64) {
@@ -152,12 +185,14 @@ fn rasterize(buf: &mut Buffer, mut tri: Triangle, cam: &Mat4f, proj: &Mat4f, dim
     }
 
     for i in 0..2 {
-        let (start_y, end_y) = match i {
+        let (mut start_y, mut end_y) = match i {
             0 => (tri.a.y.ceil() as u32, tri.b.y.ceil() as u32),
             1 => (tri.b.y.ceil() as u32, tri.c.y.ceil() as u32),
             _ => unreachable!(),
         };
 
+        start_y = start_y.clamp(0, buf.color.height() - 1);
+        end_y = end_y.clamp(0, buf.color.height() - 1);
         for y in start_y..end_y {
             let (start_x, end_x) = match i {
                 0 => top_scanline(&tri, y),
@@ -171,13 +206,13 @@ fn rasterize(buf: &mut Buffer, mut tri: Triangle, cam: &Mat4f, proj: &Mat4f, dim
                 swap(&mut start_x, &mut end_x);
             }
 
+            start_x = start_x.clamp(0, buf.color.width() - 1);
+            end_x = end_x.clamp(0, buf.color.width() - 1);
             for x in start_x..end_x {
-                if x < buf.color.width() && y < buf.color.height() {
-                    let (color, depth) = get_color_and_depth(&tri, x, y);
-                    if depth < buf.depth[[x as usize, y as usize]] && depth > -1.0 {
-                        buf.color.put_pixel(x, y, Rgb::from(color));
-                        buf.depth[[x as usize, y as usize]] = depth;
-                    }
+                let (color, depth) = get_color_and_depth(&tri, x, y);
+                if depth < buf.depth[[x as usize, y as usize]] && depth >= -1.0 {
+                    buf.color.put_pixel(x, y, Rgb::from(color));
+                    buf.depth[[x as usize, y as usize]] = depth;
                 }
             }
         }
@@ -288,10 +323,15 @@ fn sort_tri_points_y(tri: &mut Triangle) {
     }
 }
 
-fn vertex_shader(tri: &mut Triangle, cam: &Mat4f, proj: &Mat4f, dims: (u32, u32)) {
-    tri.a = math::mul_point_matrix(&tri.a, cam);
-    tri.b = math::mul_point_matrix(&tri.b, cam);
-    tri.c = math::mul_point_matrix(&tri.c, cam);
+fn vertex_shader(tri: &mut Triangle, model: &Mat4f, proj: &Mat4f, dims: (u32, u32)) -> bool {
+    tri.a = math::mul_point_matrix(&tri.a, model);
+    tri.b = math::mul_point_matrix(&tri.b, model);
+    tri.c = math::mul_point_matrix(&tri.c, model);
+
+    // primitive implementation of clipping (so z !>= 0 for perspective division)
+    if tri.a.z >= 0.0 || tri.b.z >= 0.0 || tri.c.z >= 0.0 {
+        return false;
+    }
 
     tri.a = math::mul_point_matrix(&tri.a, proj);
     tri.b = math::mul_point_matrix(&tri.b, proj);
@@ -313,4 +353,5 @@ fn vertex_shader(tri: &mut Triangle, cam: &Mat4f, proj: &Mat4f, dims: (u32, u32)
     tri.a.y *= dims.1 as f64;
     tri.b.y *= dims.1 as f64;
     tri.c.y *= dims.1 as f64;
+    true
 }
