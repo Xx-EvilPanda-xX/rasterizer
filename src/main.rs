@@ -1,12 +1,14 @@
 use std::mem::swap;
 use config::Config;
 use image::{RgbImage, Rgb};
-use dyn_array::DynArray;
 use math::Mat4f;
 use std::time::Instant;
 
 mod config;
 mod math;
+
+// z coord of the "screen" (anything with a smaller z will not be shown)
+const SCREEN_Z: f64 = -1.0;
 
 fn main() {
     let args: Vec<_> = std::env::args().collect();
@@ -25,7 +27,7 @@ fn main() {
     let config = Config::new(&config_txt, obj_txt);
     let mut buf = Buffer {
         color: RgbImage::from_pixel(config.width, config.height, Rgb::from(config.clear_color)),
-        depth: DynArray::new([config.width as usize, config.height as usize], 1.0),
+        depth: vec![1.0; config.width as usize * config.height as usize].into_boxed_slice(),
     };
     let dims = (config.width, config.height);
     let tri_count = config.triangles.len();
@@ -125,7 +127,7 @@ struct Line {
 
 struct Buffer {
     color: RgbImage,
-    depth: DynArray<f64, 2>,
+    depth: Box<[f64]>,
 }
 
 fn rasterize(buf: &mut Buffer, mut tri: Triangle, model: &Mat4f, proj: &Mat4f, dims: (u32, u32)) {
@@ -138,18 +140,18 @@ fn rasterize(buf: &mut Buffer, mut tri: Triangle, model: &Mat4f, proj: &Mat4f, d
         let ab = tri.a.x == tri.b.x;
         let ac = tri.a.x == tri.c.x;
         if !ab && !ac {
-            let Line { m: m1, b: b1 } = line_from_points(tri.a, tri.b);
-            let Line { m: m2, b: b2 } = line_from_points(tri.a, tri.c);
+            let Line { m: m1, b: b1 } = line_from_points(&tri.a, &tri.b);
+            let Line { m: m2, b: b2 } = line_from_points(&tri.a, &tri.c);
             let start = (y as f64 - b1) / m1;
             let end = (y as f64 - b2) / m2;
             (start, end)
         } else if !ab && ac {
-            let Line { m: m1, b: b1 } = line_from_points(tri.a, tri.b);
+            let Line { m: m1, b: b1 } = line_from_points(&tri.a, &tri.b);
             let start = (y as f64 - b1) / m1;
             let end = tri.c.x;
             (start, end)
         } else if ab && !ac {
-            let Line { m: m2, b: b2 } = line_from_points(tri.a, tri.c);
+            let Line { m: m2, b: b2 } = line_from_points(&tri.a, &tri.c);
             let start = tri.b.x;
             let end = (y as f64 - b2) / m2;
             (start, end)
@@ -163,18 +165,18 @@ fn rasterize(buf: &mut Buffer, mut tri: Triangle, model: &Mat4f, proj: &Mat4f, d
         let cb = tri.c.x == tri.b.x;
         let ca = tri.c.x == tri.a.x;
         if !cb && !ca {
-            let Line { m: m1, b: b1 } = line_from_points(tri.c, tri.b);
-            let Line { m: m2, b: b2 } = line_from_points(tri.c, tri.a);
+            let Line { m: m1, b: b1 } = line_from_points(&tri.c, &tri.b);
+            let Line { m: m2, b: b2 } = line_from_points(&tri.c, &tri.a);
             let start = (y as f64 - b1) / m1;
             let end = (y as f64 - b2) / m2;
             (start, end)
         } else if !cb && ca {
-            let Line { m: m1, b: b1 } = line_from_points(tri.c, tri.b);
+            let Line { m: m1, b: b1 } = line_from_points(&tri.c, &tri.b);
             let start = (y as f64 - b1) / m1;
             let end = tri.a.x;
             (start, end)
         } else if cb && !ca {
-            let Line { m: m2, b: b2 } = line_from_points(tri.c, tri.a);
+            let Line { m: m2, b: b2 } = line_from_points(&tri.c, &tri.a);
             let start = tri.b.x;
             let end = (y as f64 - b2) / m2;
             (start, end)
@@ -183,6 +185,10 @@ fn rasterize(buf: &mut Buffer, mut tri: Triangle, model: &Mat4f, proj: &Mat4f, d
             (0.0, 0.0)
         }
     }
+
+    let ab = line_from_points(&tri.a, &tri.b);
+    let bc = line_from_points(&tri.b, &tri.c);
+    let ac = line_from_points(&tri.a, &tri.c);
 
     for i in 0..2 {
         let (mut start_y, mut end_y) = match i {
@@ -200,8 +206,9 @@ fn rasterize(buf: &mut Buffer, mut tri: Triangle, model: &Mat4f, proj: &Mat4f, d
                 _ => unreachable!(),
             };
 
-            let mut start_x = start_x.round() as u32;
-            let mut end_x = end_x.round() as u32;
+            // YOU CANNOT ROUND HERE. It creates situtations where the start and end x are outside our tri
+            let mut start_x = start_x.ceil() as u32;
+            let mut end_x = end_x.ceil() as u32;
             if start_x > end_x {
                 swap(&mut start_x, &mut end_x);
             }
@@ -209,41 +216,37 @@ fn rasterize(buf: &mut Buffer, mut tri: Triangle, model: &Mat4f, proj: &Mat4f, d
             start_x = start_x.clamp(0, buf.color.width() - 1);
             end_x = end_x.clamp(0, buf.color.width() - 1);
             for x in start_x..end_x {
-                let (color, depth) = get_color_and_depth(&tri, x, y);
-                if depth < buf.depth[[x as usize, y as usize]] && depth >= -1.0 {
+                let (color, depth) = interpolate(&tri, x, y, &ab, &bc, &ac);
+                let i = y * dims.0 + x;
+                if depth < buf.depth[i as usize] && depth >= SCREEN_Z {
                     buf.color.put_pixel(x, y, Rgb::from(color));
-                    buf.depth[[x as usize, y as usize]] = depth;
+                    buf.depth[i as usize] = depth;
                 }
             }
         }
     }
 }
 
-fn get_color_and_depth(tri: &Triangle, x: u32, y: u32) -> ([u8; 3], f64) {
-    let p = Point::new_xy(x as f64 + 0.5, y as f64 + 0.5);
+fn interpolate(tri: &Triangle, x: u32, y: u32, ab: &Line, bc: &Line, ac: &Line) -> ([u8; 3], f64) {
+    let p = Point::new_xy(x as f64, y as f64);
 
     // distance from each vertex
-    let dist_a = dist(p, tri.a);
-    let dist_b = dist(p, tri.b);
-    let dist_c = dist(p, tri.c);
-
-    // sides of the tri
-    let ab = line_from_points(tri.a, tri.b);
-    let bc = line_from_points(tri.b, tri.c);
-    let ac = line_from_points(tri.a, tri.c);
+    let dist_a = dist(&p, &tri.a);
+    let dist_b = dist(&p, &tri.b);
+    let dist_c = dist(&p, &tri.c);
 
     // line passing through each vertex and our point, then find the point of intersection with opposite side
-    let ap = line_from_points(tri.a, p);
-    let ap_bc = solve_lines(ap, bc);
-    let max_dist_a = dist(tri.a, ap_bc);
+    let ap = line_from_points(&tri.a, &p);
+    let ap_bc = solve_lines(&ap, &bc);
+    let max_dist_a = dist(&tri.a, &ap_bc);
 
-    let bp = line_from_points(tri.b, p);
-    let bp_ac = solve_lines(bp, ac);
-    let max_dist_b = dist(tri.b, bp_ac);
+    let bp = line_from_points(&tri.b, &p);
+    let bp_ac = solve_lines(&bp, &ac);
+    let max_dist_b = dist(&tri.b, &bp_ac);
 
-    let cp = line_from_points(tri.c, p);
-    let cp_ab = solve_lines(cp, ab);
-    let max_dist_c = dist(tri.c, cp_ab);
+    let cp = line_from_points(&tri.c, &p);
+    let cp_ab = solve_lines(&cp, &ab);
+    let max_dist_c = dist(&tri.c, &cp_ab);
 
     // weight vertices based off distance from the point
     let a_weight = 1.0 - dist_a / max_dist_a;
@@ -259,14 +262,14 @@ fn get_color_and_depth(tri: &Triangle, x: u32, y: u32) -> ([u8; 3], f64) {
     tri.a.z * a_weight + tri.b.z * b_weight + tri.c.z * c_weight)
 }
 
-fn dist(a: Point, b: Point) -> f64 {
+fn dist(a: &Point, b: &Point) -> f64 {
     let diff_x = a.x - b.x;
     let diff_y = a.y - b.y;
     (diff_x * diff_x + diff_y * diff_y).sqrt()
 }
 
 // find m and b from two points
-fn line_from_points(p1: Point, p2: Point) -> Line {
+fn line_from_points(p1: &Point, p2: &Point) -> Line {
     let dy = p1.y - p2.y;
     let dx = p1.x - p2.x;
 
@@ -281,7 +284,7 @@ fn line_from_points(p1: Point, p2: Point) -> Line {
 }
 
 // find the point of intersection of two lines
-fn solve_lines(l1: Line, l2: Line) -> Point {
+fn solve_lines(l1: &Line, l2: &Line) -> Point {
     // account for lines that are edge cases to the below formula
     if l1.b.is_infinite() {
         return Point::new_xy(l1.m, eval(l2, l1.m, false))
@@ -301,7 +304,7 @@ fn solve_lines(l1: Line, l2: Line) -> Point {
     Point::new_xy(x, y)
 }
 
-fn eval(l: Line, val: f64, solve_x: bool) -> f64 {
+fn eval(l: &Line, val: f64, solve_x: bool) -> f64 {
     if solve_x {
         (val - l.b) / l.m
     } else {
@@ -312,14 +315,18 @@ fn eval(l: Line, val: f64, solve_x: bool) -> f64 {
 fn sort_tri_points_y(tri: &mut Triangle) {
     if tri.a.y > tri.b.y {
         swap(&mut tri.a, &mut tri.b);
+        swap(&mut tri.color_a, &mut tri.color_b);
     }
 
     if tri.b.y > tri.c.y {
         swap(&mut tri.b, &mut tri.c);
+        swap(&mut tri.color_b, &mut tri.color_c);
+
     }
 
     if tri.a.y > tri.b.y {
         swap(&mut tri.a, &mut tri.b);
+        swap(&mut tri.color_a, &mut tri.color_b);
     }
 }
 
@@ -343,9 +350,6 @@ fn vertex_shader(tri: &mut Triangle, model: &Mat4f, proj: &Mat4f, dims: (u32, u3
     tri.a.y = (tri.a.y + 1.0) / 2.0;
     tri.b.y = (tri.b.y + 1.0) / 2.0;
     tri.c.y = (tri.c.y + 1.0) / 2.0;
-    tri.a.z = (tri.a.z + 1.0) / 2.0;
-    tri.b.z = (tri.b.z + 1.0) / 2.0;
-    tri.c.z = (tri.c.z + 1.0) / 2.0;
 
     tri.a.x *= dims.0 as f64;
     tri.b.x *= dims.0 as f64;

@@ -13,10 +13,10 @@ pub struct Config {
     pub rot_x: f64,
     pub rot_y: f64,
     pub rot_z: f64,
-    pub triangles: Vec<Triangle>,
     pub trans_x: f64,
     pub trans_y: f64,
     pub trans_z: f64,
+    pub triangles: Vec<Triangle>,
 }
 
 impl Config {
@@ -44,6 +44,8 @@ impl Config {
         let width = field("width", &mut img_config);
         let height = field("height", &mut img_config);
         let clear_color = field("clear_color", &mut img_config);
+        let color_freq = field("color_freq", &mut img_config);
+        let shade_mode = field("shade_mode", &mut img_config);
         let fov = field("fov", &mut img_config);
         let n = field("n", &mut img_config);
         let f = field("f", &mut img_config);
@@ -58,7 +60,11 @@ impl Config {
         let mut triangles = Vec::new();
 
         if let Some(text) = obj {
-            triangles = load_obj(&text);
+            triangles = load_obj(
+                &text,
+                color_freq.parse().expect("Failed to parse color_freq"),
+                shade_mode.parse().expect("Failed to parse shade_mode")
+            );
         } else {
             for section in sections {
                 triangles.push(Triangle::from_config(section));
@@ -132,7 +138,7 @@ fn field<'a>(name: &str, args: &mut &'a str) -> &'a str {
     f
 }
 
-fn load_obj(text: &str) -> Vec<Triangle> {
+fn load_obj(text: &str, color_freq: f64, shade_mode: i32) -> Vec<Triangle> {
     let mut vertices = Vec::new();
     let mut indices: Vec<u32> = Vec::new();
 
@@ -162,15 +168,55 @@ fn load_obj(text: &str) -> Vec<Triangle> {
         let b = vertices[tri[1] as usize];
         let c = vertices[tri[2] as usize];
 
+        let color_a;
+        let color_b;
+        let color_c;
+
+        match shade_mode {
+            0 => {
+                let ra = (((a.x * color_freq).sin() + 1.0) * 128.0) as u8;
+                let ga = (((a.y * color_freq).sin() + 1.0) * 128.0) as u8;
+                let ba = (((a.z * color_freq).sin() + 1.0) * 128.0) as u8;
+                color_a = [ra, ga, ba];
+                color_b = [ra, ga, ba];
+                color_c = [ra, ga, ba];
+            }
+            1 => {
+                let ra = (((a.x * color_freq).sin() + 1.0) * 128.0) as u8;
+                let ga = (((a.y * color_freq).sin() + 1.0) * 128.0) as u8;
+                let ba = (((a.z * color_freq).sin() + 1.0) * 128.0) as u8;
+                let rb = (((b.x * color_freq).sin() + 1.0) * 128.0) as u8;
+                let gb = (((b.y * color_freq).sin() + 1.0) * 128.0) as u8;
+                let bb = (((b.z * color_freq).sin() + 1.0) * 128.0) as u8;
+                let rc = (((c.x * color_freq).sin() + 1.0) * 128.0) as u8;
+                let gc = (((c.y * color_freq).sin() + 1.0) * 128.0) as u8;
+                let bc = (((c.z * color_freq).sin() + 1.0) * 128.0) as u8;
+                color_a = [ra, ga, ba];
+                color_b = [rb, gb, bb];
+                color_c = [rc, gc, bc];
+            }
+            2 => {
+                let ra = (((a.x * color_freq).sin() + 1.0) * 128.0) as u8;
+                let ga = (((a.y * color_freq).cos() + 1.0) * 128.0) as u8;
+                let ba = (((a.z * color_freq).sin() + 1.0) * 128.0) as u8;
+                let rb = (((b.x * color_freq).cos() + 1.0) * 128.0) as u8;
+                let gb = (((b.y * color_freq).sin() + 1.0) * 128.0) as u8;
+                let bb = (((b.z * color_freq).cos() + 1.0) * 128.0) as u8;
+                let rc = (((c.x * color_freq).sin() + 1.0) * 128.0) as u8;
+                let gc = (((c.y * color_freq).cos() + 1.0) * 128.0) as u8;
+                let bc = (((c.z * color_freq).sin() + 1.0) * 128.0) as u8;
+                color_a = [ra, ga, ba];
+                color_b = [rb, gb, bb];
+                color_c = [rc, gc, bc];
+            }
+            _ => panic!("invalid shading mode")
+        }
+
         triangles.push(Triangle {
             a, b, c,
-            color_a: [((a.x * 255.0).abs() as u32 % 255) as u8, ((a.y * 255.0).abs() as u32 % 255) as u8, ((a.z * 255.0).abs() as u32 % 255) as u8],
-            color_b: [((a.x * 255.0).abs() as u32 % 255) as u8, ((a.y * 255.0).abs() as u32 % 255) as u8, ((a.z * 255.0).abs() as u32 % 255) as u8],
-            color_c: [((a.x * 255.0).abs() as u32 % 255) as u8, ((a.y * 255.0).abs() as u32 % 255) as u8, ((a.z * 255.0).abs() as u32 % 255) as u8],
-            // smooth shading
-            // color_a: [((a.x * 255.0).abs() as u32 % 255) as u8, ((a.y * 255.0).abs() as u32 % 255) as u8, ((a.z * 255.0).abs() as u32 % 255) as u8],
-            // color_b: [((b.x * 255.0).abs() as u32 % 255) as u8, ((b.y * 255.0).abs() as u32 % 255) as u8, ((b.z * 255.0).abs() as u32 % 255) as u8],
-            // color_c: [((c.x * 255.0).abs() as u32 % 255) as u8, ((c.y * 255.0).abs() as u32 % 255) as u8, ((c.z * 255.0).abs() as u32 % 255) as u8],
+            color_a,
+            color_b,
+            color_c,
         });
     }
 
