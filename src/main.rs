@@ -1,6 +1,6 @@
-use std::mem::swap;
+use std::{mem::swap, io::BufReader, fs::File, collections::HashMap};
 use config::Config;
-use image::{RgbImage, Rgb};
+use image::{RgbImage, RgbaImage, Rgb};
 use math::Mat4f;
 use std::time::Instant;
 
@@ -10,6 +10,11 @@ mod math;
 // z coord of the "screen" (anything with a smaller z will not be shown)
 const SCREEN_Z: f64 = -1.0;
 
+struct Buffer {
+    color: RgbImage,
+    depth: Box<[f64]>,
+}
+
 fn main() {
     let args: Vec<_> = std::env::args().collect();
     if args.len() != 2 && args.len() != 3 {
@@ -17,18 +22,24 @@ fn main() {
         std::process::exit(-1);
     }
 
-    let config_txt = std::fs::read_to_string("config.txt").expect("Failed to located config.txt");
-    let obj_txt = if args.len() == 3 {
-        Some(std::fs::read_to_string(&args[2]).expect("Failed to located obj file"))
+    let config_str = get_config();
+    let obj = if args.len() == 3 {
+        Some(
+            (std::fs::read_to_string(args[2].clone() + ".obj").expect("Failed to located obj file"),
+            std::fs::read_to_string(args[2].clone() + ".mtl").expect("Failed to located obj file"))
+        )
     } else {
         None
     };
 
-    let config = Config::new(&config_txt, obj_txt);
+    let textures = load_textures(&obj);
+    let config = Config::new(&config_str, &obj, &textures);
+
     let mut buf = Buffer {
         color: RgbImage::from_pixel(config.width, config.height, Rgb::from(config.clear_color)),
         depth: vec![1.0; config.width as usize * config.height as usize].into_boxed_slice(),
     };
+
     let dims = (config.width, config.height);
     let tri_count = config.triangles.len();
     let matrices = get_matrices(&config);
@@ -44,6 +55,47 @@ fn main() {
 
     image::imageops::flip_vertical_in_place(&mut buf.color);
     buf.color.save(args[1].clone() + ".png").expect("Failed to save image");
+}
+
+fn get_config() -> String {
+    let config_txt = std::fs::read_to_string("config.txt").expect("Failed to located config.txt");
+    let mut config = String::new();
+
+    for c in config_txt.chars() {
+        if c != ' ' && c != '\r' {
+            config.push(c);
+        }
+    }
+
+    config
+}
+
+fn load_textures(obj: &Option<(String, String)>) -> HashMap<String, RgbaImage> {
+    let mut textures = HashMap::new();
+
+    if let Some(obj) = obj {
+        for mat in obj.1.split("newmtl ") {
+            if let Ok((key, tex)) = get_tex(mat) {
+                textures.insert(key, tex);
+            }
+        }
+    }
+
+    textures
+}
+
+static MAP: &'static str = "map_Kd";
+
+fn get_tex(mat: &str) -> Result<(String, RgbaImage), ()> {
+    let key = mat.split_at(mat.find('\n').ok_or(())?).0.trim();
+    let path = mat.split_at(mat.find(MAP).ok_or(())? + MAP.len() + 1).1;
+    let path = path.split_at(path.find("\n").unwrap_or(path.len())).0.trim();
+    let mut tex = image::load(
+        BufReader::new(File::open(path).expect(&format!("Failed to open texture at {}", path))),
+        image::ImageFormat::from_path(path).expect(&format!("No such image type at {}", path))
+    ).expect(&format!("Failed to load texture at {}", path)).into_rgba8();
+    image::imageops::flip_vertical_in_place(&mut tex);
+    Ok((key.to_owned(), tex))
 }
 
 fn get_matrices(config: &Config) -> (Mat4f, Mat4f) {
@@ -88,20 +140,31 @@ fn get_matrices(config: &Config) -> (Mat4f, Mat4f) {
     (model, proj)
 }
 
-pub struct Triangle {
+#[derive(Clone, Copy, Debug)]
+pub struct Point {
+    x: f64,
+    y: f64,
+    z: f64,
+}
+
+// if undefined slope, m = x intercept and b = infinity
+#[derive(Clone, Copy, Debug)]
+struct Line {
+    m: f64,
+    b: f64,
+}
+
+pub struct Triangle<'a> {
     a: Point,
     b: Point,
     c: Point,
     color_a: [u8; 3],
     color_b: [u8; 3],
     color_c: [u8; 3],
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct Point {
-    x: f64,
-    y: f64,
-    z: f64,
+    tex_a: [f64; 2],
+    tex_b: [f64; 2],
+    tex_c: [f64; 2],
+    tex: Option<&'a RgbaImage>,
 }
 
 impl Point {
@@ -116,18 +179,6 @@ impl Point {
     fn from_arr(a: [f64; 3]) -> Self {
         Self { x: a[0], y: a[1], z: a[2] }
     }
-}
-
-// if undefined slope, m = x intercept and b = infinity
-#[derive(Clone, Copy, Debug)]
-struct Line {
-    m: f64,
-    b: f64,
-}
-
-struct Buffer {
-    color: RgbImage,
-    depth: Box<[f64]>,
 }
 
 fn rasterize(buf: &mut Buffer, mut tri: Triangle, model: &Mat4f, proj: &Mat4f, dims: (u32, u32)) {
@@ -186,10 +237,6 @@ fn rasterize(buf: &mut Buffer, mut tri: Triangle, model: &Mat4f, proj: &Mat4f, d
         }
     }
 
-    let ab = line_from_points(&tri.a, &tri.b);
-    let bc = line_from_points(&tri.b, &tri.c);
-    let ac = line_from_points(&tri.a, &tri.c);
-
     for i in 0..2 {
         let (mut start_y, mut end_y) = match i {
             0 => (tri.a.y.ceil() as u32, tri.b.y.ceil() as u32),
@@ -216,10 +263,16 @@ fn rasterize(buf: &mut Buffer, mut tri: Triangle, model: &Mat4f, proj: &Mat4f, d
             start_x = start_x.clamp(0, buf.color.width() - 1);
             end_x = end_x.clamp(0, buf.color.width() - 1);
             for x in start_x..end_x {
-                let (color, depth) = interpolate(&tri, x, y, &ab, &bc, &ac);
+                let (color, depth) = pixel_shader(&tri, x, y);
+
+                // discard transparency
+                if color[3] == 0 {
+                    continue;
+                }
+
                 let i = y * dims.0 + x;
                 if depth < buf.depth[i as usize] && depth >= SCREEN_Z {
-                    buf.color.put_pixel(x, y, Rgb::from(color));
+                    buf.color.put_pixel(x, y, Rgb::from([color[0], color[1], color[2]]));
                     buf.depth[i as usize] = depth;
                 }
             }
@@ -227,8 +280,74 @@ fn rasterize(buf: &mut Buffer, mut tri: Triangle, model: &Mat4f, proj: &Mat4f, d
     }
 }
 
-fn interpolate(tri: &Triangle, x: u32, y: u32, ab: &Line, bc: &Line, ac: &Line) -> ([u8; 3], f64) {
+fn vertex_shader(tri: &mut Triangle, model: &Mat4f, proj: &Mat4f, dims: (u32, u32)) -> bool {
+    tri.a = math::mul_point_matrix(&tri.a, model);
+    tri.b = math::mul_point_matrix(&tri.b, model);
+    tri.c = math::mul_point_matrix(&tri.c, model);
+
+    // primitive implementation of clipping (so z !>= 0 for perspective division, otherwise weird stuff unfolds)
+    if tri.a.z >= 0.0 || tri.b.z >= 0.0 || tri.c.z >= 0.0 {
+        return false;
+    }
+
+    tri.a = math::mul_point_matrix(&tri.a, proj);
+    tri.b = math::mul_point_matrix(&tri.b, proj);
+    tri.c = math::mul_point_matrix(&tri.c, proj);
+
+    // normalize to 0 to 1 and scale to raster space
+    tri.a.x = (tri.a.x + 1.0) / 2.0 * dims.0 as f64;
+    tri.b.x = (tri.b.x + 1.0) / 2.0 * dims.0 as f64;
+    tri.c.x = (tri.c.x + 1.0) / 2.0 * dims.0 as f64;
+    tri.a.y = (tri.a.y + 1.0) / 2.0 * dims.1 as f64;
+    tri.b.y = (tri.b.y + 1.0) / 2.0 * dims.1 as f64;
+    tri.c.y = (tri.c.y + 1.0) / 2.0 * dims.1 as f64;
+    true
+}
+
+const FULLY_OPAQUE: u8 = 255;
+
+fn pixel_shader(tri: &Triangle, x: u32, y: u32) -> ([u8; 4], f64) {
+    let weights = interpolate(tri, x, y);
+
+    let color = if let Some(tex) = tri.tex {
+        let vt_x = tri.tex_a[0] * weights.a + tri.tex_b[0] * weights.b + tri.tex_c[0] * weights.c;
+        let vt_y = tri.tex_a[1] * weights.a + tri.tex_b[1] * weights.b + tri.tex_c[1] * weights.c;
+        tex_sample(tex, vt_x, vt_y)
+    } else {
+        let a = [tri.color_a[0] as f64, tri.color_a[1] as f64,tri.color_a[2] as f64];
+        let b = [tri.color_b[0] as f64, tri.color_b[1] as f64,tri.color_b[2] as f64];
+        let c = [tri.color_c[0] as f64, tri.color_c[1] as f64,tri.color_c[2] as f64];
+        [(a[0] * weights.a + b[0] * weights.b + c[0] * weights.c).round() as u8,
+        (a[1] * weights.a + b[1] * weights.b + c[1] * weights.c).round() as u8,
+        (a[2] * weights.a + b[2] * weights.b + c[2] * weights.c).round() as u8,
+        FULLY_OPAQUE]
+    };
+
+    (color, tri.a.z * weights.a + tri.b.z * weights.b + tri.c.z * weights.c)
+}
+
+fn tex_sample(tex: &RgbaImage, x: f64, y: f64) -> [u8; 4] {
+    // wrap from 0 to 1
+    let x = x - x.floor();
+    let y = y - y.floor();
+    let px = (x * (tex.width() - 1) as f64) as u32;
+    let py = (y * (tex.height() - 1) as f64) as u32;
+    tex.get_pixel(px, py).0
+}
+
+struct VertexWeights {
+    a: f64,
+    b: f64,
+    c: f64,
+}
+
+fn interpolate(tri: &Triangle, x: u32, y: u32) -> VertexWeights {
     let p = Point::new_xy(x as f64, y as f64);
+
+    // sides of our triangle
+    let ab = line_from_points(&tri.a, &tri.b);
+    let bc = line_from_points(&tri.b, &tri.c);
+    let ac = line_from_points(&tri.a, &tri.c);
 
     // distance from each vertex
     let dist_a = dist(&p, &tri.a);
@@ -253,13 +372,7 @@ fn interpolate(tri: &Triangle, x: u32, y: u32, ab: &Line, bc: &Line, ac: &Line) 
     let b_weight = 1.0 - dist_b / max_dist_b;
     let c_weight = 1.0 - dist_c / max_dist_c;
 
-    let a = [tri.color_a[0] as f64, tri.color_a[1] as f64,tri.color_a[2] as f64];
-    let b = [tri.color_b[0] as f64, tri.color_b[1] as f64,tri.color_b[2] as f64];
-    let c = [tri.color_c[0] as f64, tri.color_c[1] as f64,tri.color_c[2] as f64];
-    ([(a[0] * a_weight + b[0] * b_weight + c[0] * c_weight).round() as u8,
-    (a[1] * a_weight + b[1] * b_weight + c[1] * c_weight).round() as u8,
-    (a[2] * a_weight + b[2] * b_weight + c[2] * c_weight).round() as u8],
-    tri.a.z * a_weight + tri.b.z * b_weight + tri.c.z * c_weight)
+    VertexWeights { a: a_weight, b: b_weight, c: c_weight }
 }
 
 fn dist(a: &Point, b: &Point) -> f64 {
@@ -312,50 +425,23 @@ fn eval(l: &Line, val: f64, solve_x: bool) -> f64 {
     }
 }
 
+// REMEMBER TO SWAP ALL ATTRIBUTES OF THE TRI ESPECIALLY WHEN NEW ONES ARE ADDED
 fn sort_tri_points_y(tri: &mut Triangle) {
     if tri.a.y > tri.b.y {
         swap(&mut tri.a, &mut tri.b);
         swap(&mut tri.color_a, &mut tri.color_b);
+        swap(&mut tri.tex_a, &mut tri.tex_b);
     }
 
     if tri.b.y > tri.c.y {
         swap(&mut tri.b, &mut tri.c);
         swap(&mut tri.color_b, &mut tri.color_c);
-
+        swap(&mut tri.tex_b, &mut tri.tex_c);
     }
 
     if tri.a.y > tri.b.y {
         swap(&mut tri.a, &mut tri.b);
         swap(&mut tri.color_a, &mut tri.color_b);
+        swap(&mut tri.tex_a, &mut tri.tex_b);
     }
-}
-
-fn vertex_shader(tri: &mut Triangle, model: &Mat4f, proj: &Mat4f, dims: (u32, u32)) -> bool {
-    tri.a = math::mul_point_matrix(&tri.a, model);
-    tri.b = math::mul_point_matrix(&tri.b, model);
-    tri.c = math::mul_point_matrix(&tri.c, model);
-
-    // primitive implementation of clipping (so z !>= 0 for perspective division, otherwise weird stuff unfolds)
-    if tri.a.z >= 0.0 || tri.b.z >= 0.0 || tri.c.z >= 0.0 {
-        return false;
-    }
-
-    tri.a = math::mul_point_matrix(&tri.a, proj);
-    tri.b = math::mul_point_matrix(&tri.b, proj);
-    tri.c = math::mul_point_matrix(&tri.c, proj);
-
-    tri.a.x = (tri.a.x + 1.0) / 2.0;
-    tri.b.x = (tri.b.x + 1.0) / 2.0;
-    tri.c.x = (tri.c.x + 1.0) / 2.0;
-    tri.a.y = (tri.a.y + 1.0) / 2.0;
-    tri.b.y = (tri.b.y + 1.0) / 2.0;
-    tri.c.y = (tri.c.y + 1.0) / 2.0;
-
-    tri.a.x *= dims.0 as f64;
-    tri.b.x *= dims.0 as f64;
-    tri.c.x *= dims.0 as f64;
-    tri.a.y *= dims.1 as f64;
-    tri.b.y *= dims.1 as f64;
-    tri.c.y *= dims.1 as f64;
-    true
 }

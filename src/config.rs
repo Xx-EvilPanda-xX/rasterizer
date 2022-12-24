@@ -1,8 +1,11 @@
-use std::str::FromStr;
+use std::{str::FromStr, collections::HashMap};
+
 use core::fmt::Debug;
+use image::RgbaImage;
+
 use super::{Point, Triangle};
 
-pub struct Config {
+pub struct Config<'a> {
     pub width: u32,
     pub height: u32,
     pub clear_color: [u8; 3],
@@ -16,29 +19,22 @@ pub struct Config {
     pub trans_x: f64,
     pub trans_y: f64,
     pub trans_z: f64,
-    pub triangles: Vec<Triangle>,
+    pub triangles: Vec<Triangle<'a>>,
 }
 
-impl Config {
-    pub fn new(text: &str, obj: Option<String>) -> Self {
+impl<'a> Config<'a> {
+    pub fn new(text: &str, obj: &Option<(String, String)>, textures: &'a HashMap<String, RgbaImage>) -> Self {
         let mut config = String::new();
-        for c in text.chars() {
-            if c != ' ' && c != '\r' {
-                config.push(c);
-            }
-        }
-
-        let mut config_processed = String::new();
-        for line in config.lines() {
+        for line in text.lines() {
             if line.starts_with("//") {
                 continue;
             } else {
-                config_processed.push_str(line);
-                config_processed.push('\n');
+                config.push_str(line);
+                config.push('\n');
             }
         }
 
-        let mut sections = config_processed.split_inclusive("\n\n");
+        let mut sections = config.split_inclusive("\n\n");
         let mut img_config = sections.next().expect("missing image config");
 
         let width = field("width", &mut img_config);
@@ -61,9 +57,10 @@ impl Config {
 
         if let Some(text) = obj {
             triangles = load_obj(
-                &text,
+                &text.0,
                 color_freq.parse().expect("Failed to parse color_freq"),
-                shade_mode.parse().expect("Failed to parse shade_mode")
+                shade_mode.parse().expect("Failed to parse shade_mode"),
+                textures
             );
         } else {
             for section in sections {
@@ -90,14 +87,17 @@ impl Config {
     }
 }
 
-impl Triangle {
-    pub fn from_config(mut config: &str) -> Self {
+impl<'a> Triangle<'a> {
+    pub fn from_config(mut config: &str, /* texture: Option<&'a image::RgbaImage> */) -> Self {
         let a = field("a", &mut config);
         let b = field("b", &mut config);
         let c = field("c", &mut config);
         let color_a = field("color_a", &mut config);
         let color_b = field("color_b", &mut config);
         let color_c = field("color_c", &mut config);
+        let tex_a = field("tex_a", &mut config);
+        let tex_b = field("tex_b", &mut config);
+        let tex_c = field("tex_c", &mut config);
 
         Self {
             a: Point::from_arr(parse_arr(a)),
@@ -106,6 +106,10 @@ impl Triangle {
             color_a: parse_arr(color_a),
             color_b: parse_arr(color_b),
             color_c: parse_arr(color_c),
+            tex_a: parse_arr(tex_a),
+            tex_b: parse_arr(tex_b),
+            tex_c: parse_arr(tex_c),
+            tex: None,
         }
     }
 }
@@ -130,7 +134,7 @@ fn parse_arr<T: Copy + Default + FromStr, const N: usize>(mut s: &str) -> [T; N]
     out
 }
 
-fn field<'a>(name: &str, args: &mut &'a str) -> &'a str {
+pub fn field<'a>(name: &str, args: &mut &'a str) -> &'a str {
     *args = args.strip_prefix(&format!("{}=", name)).expect(&format!("missing {}", name));
     let newline = args.find('\n').expect("missing newline");
     let f = &args[..newline];
@@ -138,11 +142,18 @@ fn field<'a>(name: &str, args: &mut &'a str) -> &'a str {
     f
 }
 
-fn load_obj(text: &str, color_freq: f64, shade_mode: i32) -> Vec<Triangle> {
+fn load_obj<'a>(obj: &str, color_freq: f64, shade_mode: i32, textures: &'a HashMap<String, RgbaImage>) -> Vec<Triangle<'a>> {
+    // vertex data
     let mut vertices = Vec::new();
-    let mut indices: Vec<u32> = Vec::new();
+    // indices into vertex data
+    let mut v_indices: Vec<[u32; 3]> = Vec::new();
+    // texture coordinates
+    let mut tex_coords = Vec::new();
+    // indices into texture coordinates and corresponding texture
+    let mut vt_indices: Vec<([u32; 3], Option<&'a RgbaImage>)> = Vec::new();
+    let mut current_tex = None;
 
-    for line in text.lines() {
+    for line in obj.lines() {
         if line.starts_with("v ") {
             let v = line.strip_prefix("v ").unwrap();
             let mut elems = v.split(' ');
@@ -150,23 +161,50 @@ fn load_obj(text: &str, color_freq: f64, shade_mode: i32) -> Vec<Triangle> {
             let y = elems.next().unwrap().trim().parse().unwrap();
             let z = elems.next().unwrap().trim().parse().unwrap();
             vertices.push(Point::new(x, y, z));
+        } else if line.starts_with("vt ") {
+            let v = line.strip_prefix("vt ").unwrap();
+            let mut elems = v.split(' ');
+            let x = elems.next().unwrap().trim().parse().unwrap();
+            let y = elems.next().unwrap().trim().parse().unwrap();
+            tex_coords.push([x, y]);
         } else if line.starts_with("f ") {
             let f = line.strip_prefix("f ").unwrap();
             let mut elems = f.split(' ');
             let idx = [elems.next().unwrap(), elems.next().unwrap(), elems.next().unwrap()];
-            for i in idx {
-                // minus one because obj file indices start at 1
-                indices.push(i.split_at(i.find('/').unwrap()).0.parse::<u32>().unwrap() - 1);
+            let mut v = [0; 3];
+            let mut vt = [0; 3];
+            let mut has_tex = false;
+            for (i, &s) in idx.iter().enumerate() {
+                let mut s = s.split('/');
+                v[i] = s.next().unwrap().parse::<u32>().unwrap() - 1;
+                if let Some(s) = s.next() {
+                    vt[i] = s.parse::<u32>().unwrap() - 1;
+                    has_tex = true;
+                }
             }
+            v_indices.push(v);
+            if has_tex {
+                vt_indices.push((vt, current_tex));
+            }
+        } else if line.starts_with("usemtl ") {
+            let k = line.strip_prefix("usemtl ").unwrap().trim();
+            current_tex = textures.get(k);
         }
+    }
+
+    if !vt_indices.is_empty() {
+        assert_eq!(v_indices.len(), vt_indices.len());
     }
 
     let mut triangles = Vec::new();
 
-    for tri in indices.chunks(3) {
-        let a = vertices[tri[0] as usize];
-        let b = vertices[tri[1] as usize];
-        let c = vertices[tri[2] as usize];
+    for tri in v_indices.iter().zip(vt_indices.iter()) {
+        let a = vertices[tri.0[0] as usize];
+        let b = vertices[tri.0[1] as usize];
+        let c = vertices[tri.0[2] as usize];
+        let tex_a = tex_coords[tri.1.0[0] as usize];
+        let tex_b = tex_coords[tri.1.0[1] as usize];
+        let tex_c = tex_coords[tri.1.0[2] as usize];
 
         let color_a;
         let color_b;
@@ -217,6 +255,10 @@ fn load_obj(text: &str, color_freq: f64, shade_mode: i32) -> Vec<Triangle> {
             color_a,
             color_b,
             color_c,
+            tex_a,
+            tex_b,
+            tex_c,
+            tex: tri.1.1,
         });
     }
 
