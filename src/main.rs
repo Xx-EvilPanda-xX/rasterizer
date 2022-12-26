@@ -1,7 +1,7 @@
 use std::{mem::swap, io::BufReader, fs::File, collections::HashMap};
 use config::Config;
 use image::{RgbImage, RgbaImage, Rgb};
-use math::Mat4f;
+use math::{Mat4f, Vec3f};
 use std::time::Instant;
 
 mod config;
@@ -22,7 +22,7 @@ fn main() {
         std::process::exit(-1);
     }
 
-    let config_str = get_config();
+    let config_str = get_config(&args[2]);
     let obj = if args.len() == 3 {
         Some(
             (std::fs::read_to_string(args[2].clone() + ".obj").expect("Failed to located obj file"),
@@ -44,12 +44,18 @@ fn main() {
     let tri_count = config.triangles.len();
     let matrices = get_matrices(&config);
 
+    let pixel_uniforms = PixelUniforms {
+        light_dir: config.light_dir.normalize(),
+        diffuse: config.diffuse,
+        ambient: config.ambient,
+    };
+
     let start = Instant::now();
     for (i, triangle) in config.triangles.into_iter().enumerate() {
         if i % 1000 == 0 {
             println!("{:.2}% complete ({}/{} triangles rendered)", (i as f64 / tri_count as f64) * 100.0, i, tri_count);
         }
-        rasterize(&mut buf, triangle, &matrices.0, &matrices.1, dims);
+        rasterize(&mut buf, triangle, &pixel_uniforms, &matrices.0, &matrices.1, dims);
     }
     println!("Finished rendering {} triangles in {} secs.", tri_count, Instant::now().duration_since(start).as_secs_f64());
 
@@ -57,8 +63,8 @@ fn main() {
     buf.color.save(args[1].clone() + ".png").expect("Failed to save image");
 }
 
-fn get_config() -> String {
-    let config_txt = std::fs::read_to_string("config.txt").expect("Failed to located config.txt");
+fn get_config(name: &str) -> String {
+    let config_txt = std::fs::read_to_string(name.to_owned() + ".txt").expect("Failed to locate config file");
     let mut config = String::new();
 
     for c in config_txt.chars() {
@@ -154,17 +160,37 @@ struct Line {
     b: f64,
 }
 
+struct Plane {
+    a: f64,
+    b: f64,
+    c: f64,
+    d: f64,
+}
+
 pub struct Triangle<'a> {
-    a: Point,
-    b: Point,
-    c: Point,
-    color_a: [u8; 3],
-    color_b: [u8; 3],
-    color_c: [u8; 3],
-    tex_a: [f64; 2],
-    tex_b: [f64; 2],
-    tex_c: [f64; 2],
+    a: Vertex,
+    b: Vertex,
+    c: Vertex,
     tex: Option<&'a RgbaImage>,
+}
+
+pub struct Vertex {
+    pos: Point,
+    color: [u8; 3],
+    n: Vec3f,
+    tex: [f64; 2],
+}
+
+pub struct AttributePlanes {
+    color_r: Plane,
+    color_g: Plane,
+    color_b: Plane,
+    n_x: Plane,
+    n_y: Plane,
+    n_z: Plane,
+    tex_x: Plane,
+    tex_y: Plane,
+    depth: Plane,
 }
 
 impl Point {
@@ -179,68 +205,35 @@ impl Point {
     fn from_arr(a: [f64; 3]) -> Self {
         Self { x: a[0], y: a[1], z: a[2] }
     }
+
+    fn into_vec(&self) -> Vec3f {
+        Vec3f { x: self.x, y: self.y, z: self.z }
+    }
 }
 
-fn rasterize(buf: &mut Buffer, mut tri: Triangle, model: &Mat4f, proj: &Mat4f, dims: (u32, u32)) {
+fn rasterize(buf: &mut Buffer, mut tri: Triangle, u: &PixelUniforms, model: &Mat4f, proj: &Mat4f, dims: (u32, u32)) {
     if !vertex_shader(&mut tri, model, proj, dims) {
         return;
     };
     sort_tri_points_y(&mut tri);
 
-    fn top_scanline(tri: &Triangle, y: u32) -> (f64, f64) {
-        let ab = tri.a.x == tri.b.x;
-        let ac = tri.a.x == tri.c.x;
-        if !ab && !ac {
-            let Line { m: m1, b: b1 } = line_from_points(&tri.a, &tri.b);
-            let Line { m: m2, b: b2 } = line_from_points(&tri.a, &tri.c);
-            let start = (y as f64 - b1) / m1;
-            let end = (y as f64 - b2) / m2;
-            (start, end)
-        } else if !ab && ac {
-            let Line { m: m1, b: b1 } = line_from_points(&tri.a, &tri.b);
-            let start = (y as f64 - b1) / m1;
-            let end = tri.c.x;
-            (start, end)
-        } else if ab && !ac {
-            let Line { m: m2, b: b2 } = line_from_points(&tri.a, &tri.c);
-            let start = tri.b.x;
-            let end = (y as f64 - b2) / m2;
-            (start, end)
-        } else {
-            // this doesn't matter since this part of the tri will be invisible
-            (0.0, 0.0)
-        }
-    }
-
-    fn bottom_scanline(tri: &Triangle, y: u32) -> (f64, f64) {
-        let cb = tri.c.x == tri.b.x;
-        let ca = tri.c.x == tri.a.x;
-        if !cb && !ca {
-            let Line { m: m1, b: b1 } = line_from_points(&tri.c, &tri.b);
-            let Line { m: m2, b: b2 } = line_from_points(&tri.c, &tri.a);
-            let start = (y as f64 - b1) / m1;
-            let end = (y as f64 - b2) / m2;
-            (start, end)
-        } else if !cb && ca {
-            let Line { m: m1, b: b1 } = line_from_points(&tri.c, &tri.b);
-            let start = (y as f64 - b1) / m1;
-            let end = tri.a.x;
-            (start, end)
-        } else if cb && !ca {
-            let Line { m: m2, b: b2 } = line_from_points(&tri.c, &tri.a);
-            let start = tri.b.x;
-            let end = (y as f64 - b2) / m2;
-            (start, end)
-        } else {
-            // this doesn't matter since this part of the tri will be invisible
-            (0.0, 0.0)
-        }
-    }
+    let (a, b, c) = (&tri.a.pos, &tri.b.pos, &tri.c.pos);
+    let planes = AttributePlanes {
+        color_r: plane_from_points(a, b, c, tri.a.color[0] as f64, tri.b.color[0] as f64, tri.c.color[0] as f64),
+        color_g: plane_from_points(a, b, c, tri.a.color[1] as f64, tri.b.color[1] as f64, tri.c.color[1] as f64),
+        color_b: plane_from_points(a, b, c, tri.a.color[2] as f64, tri.b.color[2] as f64, tri.c.color[2] as f64),
+        n_x: plane_from_points(a, b, c, tri.a.n.x, tri.b.n.x, tri.c.n.x),
+        n_y: plane_from_points(a, b, c, tri.a.n.y, tri.b.n.y, tri.c.n.y),
+        n_z: plane_from_points(a, b, c, tri.a.n.z, tri.b.n.z, tri.c.n.z),
+        tex_x: plane_from_points(a, b, c, tri.a.tex[0], tri.b.tex[0], tri.c.tex[0]),
+        tex_y: plane_from_points(a, b, c, tri.a.tex[1], tri.b.tex[1], tri.c.tex[1]),
+        depth: plane_from_points(a, b, c, tri.a.pos.z, tri.b.pos.z, tri.c.pos.z),
+    };
 
     for i in 0..2 {
         let (mut start_y, mut end_y) = match i {
-            0 => (tri.a.y.ceil() as u32, tri.b.y.ceil() as u32),
-            1 => (tri.b.y.ceil() as u32, tri.c.y.ceil() as u32),
+            0 => (tri.a.pos.y.ceil() as u32, tri.b.pos.y.ceil() as u32),
+            1 => (tri.b.pos.y.ceil() as u32, tri.c.pos.y.ceil() as u32),
             _ => unreachable!(),
         };
 
@@ -263,7 +256,7 @@ fn rasterize(buf: &mut Buffer, mut tri: Triangle, model: &Mat4f, proj: &Mat4f, d
             start_x = start_x.clamp(0, buf.color.width() - 1);
             end_x = end_x.clamp(0, buf.color.width() - 1);
             for x in start_x..end_x {
-                let (color, depth) = pixel_shader(&tri, x, y);
+                let (color, depth) = pixel_shader(&tri, u, &planes, x, y);
 
                 // discard transparency
                 if color[3] == 0 {
@@ -278,52 +271,162 @@ fn rasterize(buf: &mut Buffer, mut tri: Triangle, model: &Mat4f, proj: &Mat4f, d
             }
         }
     }
+
+    fn top_scanline(tri: &Triangle, y: u32) -> (f64, f64) {
+        let (a, b, c) = (&tri.a.pos, &tri.b.pos, &tri.c.pos);
+        let ab = a.x == b.x;
+        let ac = a.x == c.x;
+        if !ab && !ac {
+            let ab = line_from_points(a, b);
+            let ac = line_from_points(a, c);
+            let start = solve_x(&ab, y as f64);
+            let end = solve_x(&ac, y as f64);
+            (start, end)
+        } else if !ab && ac {
+            let ab = line_from_points(a, b);
+            let start = solve_x(&ab, y as f64);
+            let end = c.x;
+            (start, end)
+        } else if ab && !ac {
+            let ac = line_from_points(a, c);
+            let start = b.x;
+            let end = solve_x(&ac, y as f64);
+            (start, end)
+        } else {
+            // this doesn't matter since this part of the tri will be invisible
+            (0.0, 0.0)
+        }
+    }
+
+    fn bottom_scanline(tri: &Triangle, y: u32) -> (f64, f64) {
+        let (a, b, c) = (&tri.a.pos, &tri.b.pos, &tri.c.pos);
+        let cb = c.x == b.x;
+        let ca = c.x == a.x;
+        if !cb && !ca {
+            let cb = line_from_points(c, b);
+            let ca = line_from_points(c, a);
+            let start = solve_x(&cb, y as f64);
+            let end = solve_x(&ca, y as f64);
+            (start, end)
+        } else if !cb && ca {
+            let cb = line_from_points(c, b);
+            let start = solve_x(&cb, y as f64);
+            let end = a.x;
+            (start, end)
+        } else if cb && !ca {
+            let ca = line_from_points(c, a);
+            let start = b.x;
+            let end = solve_x(&ca, y as f64);
+            (start, end)
+        } else {
+            // this doesn't matter since this part of the tri will be invisible
+            (0.0, 0.0)
+        }
+    }
 }
 
+// TODO: properly bring normals into clip space (space of pixel shader), or make their interpolation based on world space (maybe local??)
 fn vertex_shader(tri: &mut Triangle, model: &Mat4f, proj: &Mat4f, dims: (u32, u32)) -> bool {
-    tri.a = math::mul_point_matrix(&tri.a, model);
-    tri.b = math::mul_point_matrix(&tri.b, model);
-    tri.c = math::mul_point_matrix(&tri.c, model);
+    let (a, b, c) = (&mut tri.a, &mut tri.b, &mut tri.c);
+
+    a.pos = math::mul_point_matrix(&a.pos, model);
+    b.pos = math::mul_point_matrix(&b.pos, model);
+    c.pos = math::mul_point_matrix(&c.pos, model);
+
+    // no non-uniform scaling is actually done to our points, so normals will be fine too.
+    a.n = math::mul_point_matrix(&a.n.into_point(), &model.no_trans()).into_vec().normalize();
+    b.n = math::mul_point_matrix(&b.n.into_point(), &model.no_trans()).into_vec().normalize();
+    c.n = math::mul_point_matrix(&c.n.into_point(), &model.no_trans()).into_vec().normalize();
 
     // primitive implementation of clipping (so z !>= 0 for perspective division, otherwise weird stuff unfolds)
-    if tri.a.z >= 0.0 || tri.b.z >= 0.0 || tri.c.z >= 0.0 {
+    if a.pos.z >= 0.0 || b.pos.z >= 0.0 || c.pos.z >= 0.0 {
         return false;
     }
 
-    tri.a = math::mul_point_matrix(&tri.a, proj);
-    tri.b = math::mul_point_matrix(&tri.b, proj);
-    tri.c = math::mul_point_matrix(&tri.c, proj);
+    a.pos = math::mul_point_matrix(&a.pos, proj);
+    b.pos = math::mul_point_matrix(&b.pos, proj);
+    c.pos = math::mul_point_matrix(&c.pos, proj);
 
     // normalize to 0 to 1 and scale to raster space
-    tri.a.x = (tri.a.x + 1.0) / 2.0 * dims.0 as f64;
-    tri.b.x = (tri.b.x + 1.0) / 2.0 * dims.0 as f64;
-    tri.c.x = (tri.c.x + 1.0) / 2.0 * dims.0 as f64;
-    tri.a.y = (tri.a.y + 1.0) / 2.0 * dims.1 as f64;
-    tri.b.y = (tri.b.y + 1.0) / 2.0 * dims.1 as f64;
-    tri.c.y = (tri.c.y + 1.0) / 2.0 * dims.1 as f64;
+    a.pos.x = (a.pos.x + 1.0) / 2.0 * dims.0 as f64;
+    b.pos.x = (b.pos.x + 1.0) / 2.0 * dims.0 as f64;
+    c.pos.x = (c.pos.x + 1.0) / 2.0 * dims.0 as f64;
+    a.pos.y = (a.pos.y + 1.0) / 2.0 * dims.1 as f64;
+    b.pos.y = (b.pos.y + 1.0) / 2.0 * dims.1 as f64;
+    c.pos.y = (c.pos.y + 1.0) / 2.0 * dims.1 as f64;
     true
 }
 
 const FULLY_OPAQUE: u8 = 255;
+const INTERPOLATE_FAST: bool = true;
 
-fn pixel_shader(tri: &Triangle, x: u32, y: u32) -> ([u8; 4], f64) {
-    let weights = interpolate(tri, x, y);
+/*
+interpolate_fast treats our attributes as the z values of our
+triangles, then solves for z when x and y are known at any
+arbitrary point in that plane.
 
-    let color = if let Some(tex) = tri.tex {
-        let vt_x = tri.tex_a[0] * weights.a + tri.tex_b[0] * weights.b + tri.tex_c[0] * weights.c;
-        let vt_y = tri.tex_a[1] * weights.a + tri.tex_b[1] * weights.b + tri.tex_c[1] * weights.c;
-        tex_sample(tex, vt_x, vt_y)
+interpolate_slow finds the maximum distance away from a vertex
+that a point on our triangle can be, as well as the actual distance.
+From there, it can produce a "weight" for each vertex, to be
+multiplied with our attributes.
+*/
+
+struct PixelUniforms {
+    light_dir: Vec3f,
+    diffuse: f64,
+    ambient: f64,
+}
+
+fn pixel_shader(tri: &Triangle, u: &PixelUniforms, planes: &AttributePlanes, x: u32, y: u32) -> ([u8; 4], f64) {
+    if INTERPOLATE_FAST {
+        let n = Vec3f::new(
+            lerp_fast(&planes.n_x, x, y),
+            lerp_fast(&planes.n_y, x, y),
+            lerp_fast(&planes.n_z, x, y)
+        );
+
+        let diff = (Vec3f::dot(&n, &u.light_dir) * u.diffuse).max(u.ambient);
+
+        let color = if let Some(tex) = tri.tex {
+            let vt_x = lerp_fast(&planes.tex_x, x, y);
+            let vt_y = lerp_fast(&planes.tex_y, x, y);
+            let base = tex_sample(tex, vt_x, vt_y);
+            [(base[0] as f64 * diff) as u8, (base[1] as f64 * diff) as u8, (base[2] as f64 * diff) as u8, base[3]]
+        } else {
+            [(lerp_fast(&planes.color_r, x, y).round() * diff) as u8,
+            (lerp_fast(&planes.color_g, x, y).round() * diff) as u8,
+            (lerp_fast(&planes.color_b, x, y).round() * diff) as u8,
+            FULLY_OPAQUE]
+        };
+
+        (color, lerp_fast(&planes.depth, x, y))
     } else {
-        let a = [tri.color_a[0] as f64, tri.color_a[1] as f64,tri.color_a[2] as f64];
-        let b = [tri.color_b[0] as f64, tri.color_b[1] as f64,tri.color_b[2] as f64];
-        let c = [tri.color_c[0] as f64, tri.color_c[1] as f64,tri.color_c[2] as f64];
-        [(a[0] * weights.a + b[0] * weights.b + c[0] * weights.c).round() as u8,
-        (a[1] * weights.a + b[1] * weights.b + c[1] * weights.c).round() as u8,
-        (a[2] * weights.a + b[2] * weights.b + c[2] * weights.c).round() as u8,
-        FULLY_OPAQUE]
-    };
+        let weights = lerp_slow(tri, x, y);
+        let n = Vec3f::new(
+            tri.a.n.x * weights.a + tri.b.n.x * weights.b + tri.c.n.x * weights.c,
+            tri.a.n.y * weights.a + tri.b.n.y * weights.b + tri.c.n.y * weights.c,
+            tri.a.n.z * weights.a + tri.b.n.z * weights.b + tri.c.n.z * weights.c,
+        );
 
-    (color, tri.a.z * weights.a + tri.b.z * weights.b + tri.c.z * weights.c)
+        let diff = (Vec3f::dot(&n, &u.light_dir.normalize()) * u.diffuse).max(u.ambient);
+
+        let color = if let Some(tex) = tri.tex {
+            let vt_x = tri.a.tex[0] * weights.a + tri.b.tex[0] * weights.b + tri.c.tex[0] * weights.c;
+            let vt_y = tri.a.tex[1] * weights.a + tri.b.tex[1] * weights.b + tri.c.tex[1] * weights.c;
+            let base = tex_sample(tex, vt_x, vt_y);
+            [(base[0] as f64 * diff) as u8, (base[1] as f64 * diff) as u8, (base[2] as f64 * diff) as u8, base[3]]
+        } else {
+            let a = [tri.a.color[0] as f64, tri.a.color[1] as f64, tri.a.color[2] as f64];
+            let b = [tri.b.color[0] as f64, tri.b.color[1] as f64, tri.b.color[2] as f64];
+            let c = [tri.c.color[0] as f64, tri.c.color[1] as f64, tri.c.color[2] as f64];
+            [((a[0] * weights.a + b[0] * weights.b + c[0] * weights.c).round() * diff) as u8,
+            ((a[1] * weights.a + b[1] * weights.b + c[1] * weights.c).round() * diff) as u8,
+            ((a[2] * weights.a + b[2] * weights.b + c[2] * weights.c).round() * diff) as u8,
+            FULLY_OPAQUE]
+        };
+
+        (color, tri.a.pos.z * weights.a + tri.b.pos.z * weights.b + tri.c.pos.z * weights.c)
+    }
 }
 
 fn tex_sample(tex: &RgbaImage, x: f64, y: f64) -> [u8; 4] {
@@ -335,37 +438,44 @@ fn tex_sample(tex: &RgbaImage, x: f64, y: f64) -> [u8; 4] {
     tex.get_pixel(px, py).0
 }
 
+fn lerp_fast(p: &Plane, x: u32, y: u32) -> f64 {
+    let p1 = Point::new_xy(x as f64, y as f64);
+    let z = (p.d - p.a * p1.x - p.b * p1.y) / p.c;
+    z
+}
+
 struct VertexWeights {
     a: f64,
     b: f64,
     c: f64,
 }
 
-fn interpolate(tri: &Triangle, x: u32, y: u32) -> VertexWeights {
+fn lerp_slow(tri: &Triangle, x: u32, y: u32) -> VertexWeights {
+    let (a, b, c) = (&tri.a.pos, &tri.b.pos, &tri.c.pos);
     let p = Point::new_xy(x as f64, y as f64);
 
     // sides of our triangle
-    let ab = line_from_points(&tri.a, &tri.b);
-    let bc = line_from_points(&tri.b, &tri.c);
-    let ac = line_from_points(&tri.a, &tri.c);
+    let ab = line_from_points(a, b);
+    let bc = line_from_points(b, c);
+    let ac = line_from_points(a, c);
 
     // distance from each vertex
-    let dist_a = dist(&p, &tri.a);
-    let dist_b = dist(&p, &tri.b);
-    let dist_c = dist(&p, &tri.c);
+    let dist_a = dist(&p, a);
+    let dist_b = dist(&p, b);
+    let dist_c = dist(&p, c);
 
     // line passing through each vertex and our point, then find the point of intersection with opposite side
-    let ap = line_from_points(&tri.a, &p);
+    let ap = line_from_points(a, &p);
     let ap_bc = solve_lines(&ap, &bc);
-    let max_dist_a = dist(&tri.a, &ap_bc);
+    let max_dist_a = dist(a, &ap_bc);
 
-    let bp = line_from_points(&tri.b, &p);
+    let bp = line_from_points(b, &p);
     let bp_ac = solve_lines(&bp, &ac);
-    let max_dist_b = dist(&tri.b, &bp_ac);
+    let max_dist_b = dist(b, &bp_ac);
 
-    let cp = line_from_points(&tri.c, &p);
+    let cp = line_from_points(c, &p);
     let cp_ab = solve_lines(&cp, &ab);
-    let max_dist_c = dist(&tri.c, &cp_ab);
+    let max_dist_c = dist(c, &cp_ab);
 
     // weight vertices based off distance from the point
     let a_weight = 1.0 - dist_a / max_dist_a;
@@ -396,52 +506,61 @@ fn line_from_points(p1: &Point, p2: &Point) -> Line {
     Line { m, b }
 }
 
+fn plane_from_points(p1: &Point, p2: &Point, p3: &Point, z1: f64, z2: f64, z3: f64) -> Plane {
+    let v1 = Vec3f::new(p2.x, p2.y, z2) - Vec3f::new(p1.x, p1.y, z1);
+    let v2 = Vec3f::new(p3.x, p3.y, z3) - Vec3f::new(p1.x, p1.y, z1);
+
+    let n = Vec3f::cross(&v1, &v2);
+    let d = n.x * p1.x + n.y * p1.y + n.z * z1;
+
+    Plane {
+        a: n.x,
+        b: n.y,
+        c: n.z,
+        d,
+    }
+}
+
 // find the point of intersection of two lines
 fn solve_lines(l1: &Line, l2: &Line) -> Point {
     // account for lines that are edge cases to the below formula
     if l1.b.is_infinite() {
-        return Point::new_xy(l1.m, eval(l2, l1.m, false))
+        return Point::new_xy(l1.m, solve_y(l2, l1.m))
     }
     if l2.b.is_infinite() {
-        return Point::new_xy(l2.m, eval(l1, l2.m, false));
+        return Point::new_xy(l2.m, solve_y(l1, l2.m));
     }
     if l1.m == 0.0 {
-        return Point::new_xy(eval(l2, l1.b, true), l1.b)
+        return Point::new_xy(solve_x(l2, l1.b), l1.b)
     }
     if l2.m == 0.0 {
-        return Point::new_xy(eval(l1, l2.b, true), l2.b)
+        return Point::new_xy(solve_x(l1, l2.b), l2.b)
     }
 
     let y = (l2.b * l1.m - l1.b * l2.m) / (l1.m - l2.m);
-    let x = (y - l1.b) / l1.m;
+    let x = solve_x(&l1, y);
     Point::new_xy(x, y)
 }
 
-fn eval(l: &Line, val: f64, solve_x: bool) -> f64 {
-    if solve_x {
-        (val - l.b) / l.m
-    } else {
-        l.m * val + l.b
-    }
+fn solve_x(l: &Line, y: f64) -> f64 {
+    (y - l.b) / l.m
+}
+
+fn solve_y(l: &Line, x: f64) -> f64 {
+    l.m * x + l.b
 }
 
 // REMEMBER TO SWAP ALL ATTRIBUTES OF THE TRI ESPECIALLY WHEN NEW ONES ARE ADDED
 fn sort_tri_points_y(tri: &mut Triangle) {
-    if tri.a.y > tri.b.y {
+    if tri.a.pos.y > tri.b.pos.y {
         swap(&mut tri.a, &mut tri.b);
-        swap(&mut tri.color_a, &mut tri.color_b);
-        swap(&mut tri.tex_a, &mut tri.tex_b);
     }
 
-    if tri.b.y > tri.c.y {
+    if tri.b.pos.y > tri.c.pos.y {
         swap(&mut tri.b, &mut tri.c);
-        swap(&mut tri.color_b, &mut tri.color_c);
-        swap(&mut tri.tex_b, &mut tri.tex_c);
     }
 
-    if tri.a.y > tri.b.y {
+    if tri.a.pos.y > tri.b.pos.y {
         swap(&mut tri.a, &mut tri.b);
-        swap(&mut tri.color_a, &mut tri.color_b);
-        swap(&mut tri.tex_a, &mut tri.tex_b);
     }
 }

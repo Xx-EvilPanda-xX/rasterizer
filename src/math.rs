@@ -1,5 +1,5 @@
 use std::fmt::{Display, Formatter};
-use std::ops::{Index, IndexMut};
+use std::ops::{Index, IndexMut, Sub};
 use super::Point;
 
 pub struct Perspective {
@@ -70,25 +70,11 @@ pub fn mul_point_matrix(point: &Point, mat: &Mat4f) -> Point {
 pub fn mul_matrix_matrix(m1: &Mat4f, m2: &Mat4f) -> Mat4f {
     let mut out = Mat4f::new();
 
-    out[0][0] = row_col_mul(m1, m2, 0, 0);
-    out[1][0] = row_col_mul(m1, m2, 1, 0);
-    out[2][0] = row_col_mul(m1, m2, 2, 0);
-    out[3][0] = row_col_mul(m1, m2, 3, 0);
-
-    out[0][1] = row_col_mul(m1, m2, 0, 1);
-    out[1][1] = row_col_mul(m1, m2, 1, 1);
-    out[2][1] = row_col_mul(m1, m2, 2, 1);
-    out[3][1] = row_col_mul(m1, m2, 3, 1);
-
-    out[0][2] = row_col_mul(m1, m2, 0, 2);
-    out[1][2] = row_col_mul(m1, m2, 1, 2);
-    out[2][2] = row_col_mul(m1, m2, 2, 2);
-    out[3][2] = row_col_mul(m1, m2, 3, 2);
-
-    out[0][3] = row_col_mul(m1, m2, 0, 3);
-    out[1][3] = row_col_mul(m1, m2, 1, 3);
-    out[2][3] = row_col_mul(m1, m2, 2, 3);
-    out[3][3] = row_col_mul(m1, m2, 3, 3);
+    for i in 0..4 {
+        for j in 0..4 {
+            out[j][i] = row_col_mul(m1, m2, j, i);
+        }
+    }
 
     out
 }
@@ -103,9 +89,16 @@ fn row_col_mul(m1: &Mat4f, m2: &Mat4f, row: usize, col: usize) -> f64 {
     out
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Mat4f {
     pub mat: [[f64; 4]; 4],
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Vec3f {
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
 }
 
 impl Mat4f {
@@ -116,6 +109,14 @@ impl Mat4f {
             [0.0, 0.0, 1.0, 0.0],
             [0.0, 0.0, 0.0, 1.0]]
         }
+    }
+
+    pub fn no_trans(&self) -> Self {
+        let mut new = self.clone();
+        new[0][3] = 0.0;
+        new[1][3] = 0.0;
+        new[2][3] = 0.0;
+        new
     }
 }
 
@@ -142,6 +143,65 @@ impl Display for Mat4f {
             self[2][0], self[2][1], self[2][2], self[2][3],
             self[3][0], self[3][1], self[3][2], self[3][3],
         ))
+    }
+}
+
+impl Vec3f {
+    pub fn new(x: f64, y: f64, z: f64) -> Self {
+        Self {
+            x,
+            y,
+            z,
+        }
+    }
+
+    pub fn from_arr(x: [f64; 3]) -> Self {
+        Self {
+            x: x[0],
+            y: x[1],
+            z: x[2],
+        }
+    }
+
+    pub fn dot(a: &Vec3f, b: &Vec3f) -> f64 {
+        a.x * b.x + a.y * b.y + a.z * b.z
+    }
+
+    pub fn cross(a: &Vec3f, b: &Vec3f) -> Self {
+        Self {
+            x: a.y * b.z - a.z * b.y,
+            y: a.z * b.x - a.x * b.z,
+            z: a.x * b.y - a.y * b.x,
+        }
+    }
+
+    pub fn normalize(&self) -> Self {
+        let len = self.mag();
+        Self {
+            x: self.x / len,
+            y: self.y / len,
+            z: self.z / len,
+        }
+    }
+
+    pub fn mag(&self) -> f64 {
+        (self.x * self.x + self.y * self.y + self.z * self.z).sqrt()
+    }
+
+    pub fn into_point(&self) -> Point {
+        Point { x: self.x, y: self.y, z: self.z }
+    }
+}
+
+impl Sub for Vec3f {
+    type Output = Vec3f;
+
+    fn sub(self, rhs: Self) -> Self::Output {
+        Vec3f {
+            x: self.x - rhs.x,
+            y: self.y - rhs.y,
+            z: self.z - rhs.z,
+        }
     }
 }
 

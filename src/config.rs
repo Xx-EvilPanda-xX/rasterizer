@@ -3,7 +3,7 @@ use std::{str::FromStr, collections::HashMap};
 use core::fmt::Debug;
 use image::RgbaImage;
 
-use super::{Point, Triangle};
+use super::{Point, Triangle, Vertex, math::Vec3f};
 
 pub struct Config<'a> {
     pub width: u32,
@@ -19,6 +19,9 @@ pub struct Config<'a> {
     pub trans_x: f64,
     pub trans_y: f64,
     pub trans_z: f64,
+    pub light_dir: Vec3f,
+    pub diffuse: f64,
+    pub ambient: f64,
     pub triangles: Vec<Triangle<'a>>,
 }
 
@@ -52,6 +55,9 @@ impl<'a> Config<'a> {
         let trans_x = field("trans_x", &mut img_config);
         let trans_y = field("trans_y", &mut img_config);
         let trans_z = field("trans_z", &mut img_config);
+        let light_dir = field("light_dir", &mut img_config);
+        let diffuse = field("diffuse", &mut img_config);
+        let ambient = field("ambient", &mut img_config);
 
         let mut triangles = Vec::new();
 
@@ -82,6 +88,9 @@ impl<'a> Config<'a> {
             trans_x: trans_x.parse().expect("Failed to parse trans_x"),
             trans_y: trans_y.parse().expect("Failed to parse trans_y"),
             trans_z: trans_z.parse().expect("Failed to parse trans_z"),
+            light_dir: Vec3f::from_arr(parse_arr(light_dir)),
+            diffuse: diffuse.parse().expect("Failed to parse diffuse"),
+            ambient: ambient.parse().expect("Failed to parse ambient"),
             triangles,
         }
     }
@@ -89,26 +98,38 @@ impl<'a> Config<'a> {
 
 impl<'a> Triangle<'a> {
     pub fn from_config(mut config: &str, /* texture: Option<&'a image::RgbaImage> */) -> Self {
-        let a = field("a", &mut config);
-        let b = field("b", &mut config);
-        let c = field("c", &mut config);
-        let color_a = field("color_a", &mut config);
-        let color_b = field("color_b", &mut config);
-        let color_c = field("color_c", &mut config);
-        let tex_a = field("tex_a", &mut config);
-        let tex_b = field("tex_b", &mut config);
-        let tex_c = field("tex_c", &mut config);
+        let a = Point::from_arr(parse_arr(field("a", &mut config)));
+        let b = Point::from_arr(parse_arr(field("b", &mut config)));
+        let c = Point::from_arr(parse_arr(field("c", &mut config)));
+        let color_a = parse_arr(field("color_a", &mut config));
+        let color_b = parse_arr(field("color_b", &mut config));
+        let color_c = parse_arr(field("color_c", &mut config));
+        let tex_a = parse_arr(field("tex_a", &mut config));
+        let tex_b = parse_arr(field("tex_b", &mut config));
+        let tex_c = parse_arr(field("tex_c", &mut config));
 
+        let ab = Vec3f::new(b.x, b.y, b.z) - Vec3f::new(a.x, a.y, a.z);
+        let ac = Vec3f::new(c.x, c.y, c.z) - Vec3f::new(a.x, a.y, a.z);
+        let n = Vec3f::cross(&ab, &ac).normalize();
         Self {
-            a: Point::from_arr(parse_arr(a)),
-            b: Point::from_arr(parse_arr(b)),
-            c: Point::from_arr(parse_arr(c)),
-            color_a: parse_arr(color_a),
-            color_b: parse_arr(color_b),
-            color_c: parse_arr(color_c),
-            tex_a: parse_arr(tex_a),
-            tex_b: parse_arr(tex_b),
-            tex_c: parse_arr(tex_c),
+            a: Vertex {
+                pos: a,
+                n,
+                color: color_a,
+                tex: tex_a,
+            },
+            b: Vertex {
+                pos: b,
+                color: color_b,
+                n,
+                tex: tex_b,
+            },
+            c: Vertex {
+                pos: c,
+                color: color_c,
+                n,
+                tex: tex_c,
+            },
             tex: None,
         }
     }
@@ -250,14 +271,28 @@ fn load_obj<'a>(obj: &str, color_freq: f64, shade_mode: i32, textures: &'a HashM
             _ => panic!("invalid shading mode")
         }
 
+        let ab = Vec3f::new(b.x, b.y, b.z) - Vec3f::new(a.x, a.y, a.z);
+        let ac = Vec3f::new(c.x, c.y, c.z) - Vec3f::new(a.x, a.y, a.z);
+        let n = Vec3f::cross(&ab, &ac).normalize();
         triangles.push(Triangle {
-            a, b, c,
-            color_a,
-            color_b,
-            color_c,
-            tex_a,
-            tex_b,
-            tex_c,
+            a: Vertex {
+                pos: a,
+                color: color_a,
+                n,
+                tex: tex_a
+            },
+            b: Vertex {
+                pos: b,
+                color: color_b,
+                n,
+                tex: tex_b
+            },
+            c: Vertex {
+                pos: c,
+                color: color_c,
+                n,
+                tex: tex_c
+            },
             tex: tri.1.1,
         });
     }
