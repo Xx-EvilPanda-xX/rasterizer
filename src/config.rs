@@ -23,6 +23,7 @@ pub struct Config<'a> {
     pub diffuse: f64,
     pub ambient: f64,
     pub triangles: Vec<Triangle<'a>>,
+    pub static_light: bool,
 }
 
 impl<'a> Config<'a> {
@@ -58,6 +59,7 @@ impl<'a> Config<'a> {
         let light_dir = field("light_dir", &mut img_config);
         let diffuse = field("diffuse", &mut img_config);
         let ambient = field("ambient", &mut img_config);
+        let static_light = field("static_light", &mut img_config);
 
         let mut triangles = Vec::new();
 
@@ -91,6 +93,7 @@ impl<'a> Config<'a> {
             light_dir: Vec3f::from_arr(parse_arr(light_dir)),
             diffuse: diffuse.parse().expect("Failed to parse diffuse"),
             ambient: ambient.parse().expect("Failed to parse ambient"),
+            static_light: static_light.parse().expect("Failed to parse static_light"),
             triangles,
         }
     }
@@ -168,6 +171,10 @@ fn load_obj<'a>(obj: &str, color_freq: f64, shade_mode: i32, textures: &'a HashM
     let mut vertices = Vec::new();
     // indices into vertex data
     let mut v_indices: Vec<[u32; 3]> = Vec::new();
+    // normal data
+    let mut normals = Vec::new();
+    // indices into normal data
+    let mut vn_indices: Vec<[u32; 3]> = Vec::new();
     // texture coordinates
     let mut tex_coords = Vec::new();
     // indices into texture coordinates and corresponding texture
@@ -188,24 +195,46 @@ fn load_obj<'a>(obj: &str, color_freq: f64, shade_mode: i32, textures: &'a HashM
             let x = elems.next().unwrap().trim().parse().unwrap();
             let y = elems.next().unwrap().trim().parse().unwrap();
             tex_coords.push([x, y]);
+        } else if line.starts_with("vn ") {
+            let v = line.strip_prefix("vn ").unwrap();
+            let mut elems = v.split(' ');
+            let x = elems.next().unwrap().trim().parse().unwrap();
+            let y = elems.next().unwrap().trim().parse().unwrap();
+            let z = elems.next().unwrap().trim().parse().unwrap();
+            normals.push(Vec3f::new(x, y, z));
         } else if line.starts_with("f ") {
             let f = line.strip_prefix("f ").unwrap();
             let mut elems = f.split(' ');
             let idx = [elems.next().unwrap(), elems.next().unwrap(), elems.next().unwrap()];
+
             let mut v = [0; 3];
-            let mut vt = [0; 3];
-            let mut has_tex = false;
+            let mut vt = ([0; 3], false);
+            let mut vn = ([0; 3], false);
+
             for (i, &s) in idx.iter().enumerate() {
                 let mut s = s.split('/');
+
                 v[i] = s.next().unwrap().parse::<u32>().unwrap() - 1;
+
                 if let Some(s) = s.next() {
-                    vt[i] = s.parse::<u32>().unwrap() - 1;
-                    has_tex = true;
+                    vt.0[i] = s.parse::<u32>().unwrap() - 1;
+                    vt.1 = true;
+                }
+
+                if let Some(s) = s.next() {
+                    vn.0[i] = s.parse::<u32>().unwrap() - 1;
+                    vn.1 = true;
                 }
             }
+
             v_indices.push(v);
-            if has_tex {
-                vt_indices.push((vt, current_tex));
+
+            if vt.1 {
+                vt_indices.push((vt.0, current_tex));
+            }
+
+            if vn.1 {
+                vn_indices.push(vn.0);
             }
         } else if line.starts_with("usemtl ") {
             let k = line.strip_prefix("usemtl ").unwrap().trim();
@@ -217,15 +246,16 @@ fn load_obj<'a>(obj: &str, color_freq: f64, shade_mode: i32, textures: &'a HashM
         assert_eq!(v_indices.len(), vt_indices.len());
     }
 
+    if !vn_indices.is_empty() {
+        assert_eq!(v_indices.len(), vn_indices.len());
+    }
+
     let mut triangles = Vec::new();
 
-    for tri in v_indices.iter().zip(vt_indices.iter()) {
-        let a = vertices[tri.0[0] as usize];
-        let b = vertices[tri.0[1] as usize];
-        let c = vertices[tri.0[2] as usize];
-        let tex_a = tex_coords[tri.1.0[0] as usize];
-        let tex_b = tex_coords[tri.1.0[1] as usize];
-        let tex_c = tex_coords[tri.1.0[2] as usize];
+    for tri in v_indices.iter() {
+        let a = vertices[tri[0] as usize];
+        let b = vertices[tri[1] as usize];
+        let c = vertices[tri[2] as usize];
 
         let color_a;
         let color_b;
@@ -279,22 +309,43 @@ fn load_obj<'a>(obj: &str, color_freq: f64, shade_mode: i32, textures: &'a HashM
                 pos: a,
                 color: color_a,
                 n,
-                tex: tex_a
+                tex: [0.0, 0.0]
             },
             b: Vertex {
                 pos: b,
                 color: color_b,
                 n,
-                tex: tex_b
+                tex: [0.0, 0.0]
             },
             c: Vertex {
                 pos: c,
                 color: color_c,
                 n,
-                tex: tex_c
+                tex: [0.0, 0.0]
             },
-            tex: tri.1.1,
+            tex: None,
         });
+    }
+
+    for (i, tri) in vt_indices.iter().enumerate() {
+        let tex_a = tex_coords[tri.0[0] as usize];
+        let tex_b = tex_coords[tri.0[1] as usize];
+        let tex_c = tex_coords[tri.0[2] as usize];
+
+        triangles[i].a.tex = tex_a;
+        triangles[i].b.tex = tex_b;
+        triangles[i].c.tex = tex_c;
+        triangles[i].tex = tri.1;
+    }
+
+    for (i, tri) in vn_indices.iter().enumerate() {
+        let n_a = normals[tri[0] as usize];
+        let n_b = normals[tri[1] as usize];
+        let n_c = normals[tri[2] as usize];
+
+        triangles[i].a.n = n_a;
+        triangles[i].b.n = n_b;
+        triangles[i].c.n = n_c;
     }
 
     triangles

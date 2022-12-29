@@ -188,6 +188,14 @@ impl Vec3f {
         (self.x * self.x + self.y * self.y + self.z * self.z).sqrt()
     }
 
+    pub fn inv(&self) -> Self {
+        Self {
+            x: -self.x,
+            y: -self.y,
+            z: -self.z,
+        }
+    }
+
     pub fn into_point(&self) -> Point {
         Point { x: self.x, y: self.y, z: self.z }
     }

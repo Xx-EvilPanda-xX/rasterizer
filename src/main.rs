@@ -1,6 +1,7 @@
 use std::{mem::swap, io::BufReader, fs::File, collections::HashMap};
 use config::Config;
 use image::{RgbImage, RgbaImage, Rgb};
+use scoped_threadpool::Pool;
 use math::{Mat4f, Vec3f};
 use std::time::Instant;
 
@@ -40,22 +41,25 @@ fn main() {
         depth: vec![1.0; config.width as usize * config.height as usize].into_boxed_slice(),
     };
 
-    let dims = (config.width, config.height);
-    let tri_count = config.triangles.len();
-    let matrices = get_matrices(&config);
-
-    let pixel_uniforms = PixelUniforms {
-        light_dir: config.light_dir.normalize(),
+    let uniforms = Uniforms {
+        light_dir: config.light_dir.normalize().inv(),
         diffuse: config.diffuse,
         ambient: config.ambient,
+        static_light: config.static_light,
     };
 
+    let matrices = get_matrices(&config);
+    let tri_count = config.triangles.len();
+
+    let mut pool = Pool::new(1);
+
     let start = Instant::now();
-    for (i, triangle) in config.triangles.into_iter().enumerate() {
+    for (i, triangle) in config.triangles.iter().enumerate() {
         if i % 1000 == 0 {
             println!("{:.2}% complete ({}/{} triangles rendered)", (i as f64 / tri_count as f64) * 100.0, i, tri_count);
         }
-        rasterize(&mut buf, triangle, &pixel_uniforms, &matrices.0, &matrices.1, dims);
+
+        rasterize(&mut buf, &mut pool, triangle, &uniforms, &matrices.0, &matrices.1);
     }
     println!("Finished rendering {} triangles in {} secs.", tri_count, Instant::now().duration_since(start).as_secs_f64());
 
@@ -140,7 +144,7 @@ fn get_matrices(config: &Config) -> (Mat4f, Mat4f) {
     model = math::mul_matrix_matrix(&model, &rot_y);
     model = math::mul_matrix_matrix(&model, &rot_z);
 
-    let perspective = math::get_perspective(config.fov, config.width as f64 / config.height  as f64, config.n, config.f);
+    let perspective = math::get_perspective(config.fov, config.width as f64 / config.height as f64, config.n, config.f);
     let proj = math::frustum(&perspective);
 
     (model, proj)
@@ -160,6 +164,7 @@ struct Line {
     b: f64,
 }
 
+#[derive(Clone, Copy, Debug)]
 struct Plane {
     a: f64,
     b: f64,
@@ -167,6 +172,7 @@ struct Plane {
     d: f64,
 }
 
+#[derive(Clone, Debug)]
 pub struct Triangle<'a> {
     a: Vertex,
     b: Vertex,
@@ -174,6 +180,7 @@ pub struct Triangle<'a> {
     tex: Option<&'a RgbaImage>,
 }
 
+#[derive(Clone, Debug)]
 pub struct Vertex {
     pos: Point,
     color: [u8; 3],
@@ -191,6 +198,13 @@ pub struct AttributePlanes {
     tex_x: Plane,
     tex_y: Plane,
     depth: Plane,
+}
+
+struct Uniforms {
+    light_dir: Vec3f,
+    diffuse: f64,
+    ambient: f64,
+    static_light: bool,
 }
 
 impl Point {
@@ -211,8 +225,13 @@ impl Point {
     }
 }
 
-fn rasterize(buf: &mut Buffer, mut tri: Triangle, u: &PixelUniforms, model: &Mat4f, proj: &Mat4f, dims: (u32, u32)) {
-    if !vertex_shader(&mut tri, model, proj, dims) {
+const SCANLINE_THREAD_TOLERANCE: u32 = 10;
+const COLOR_BUFFER_CHANNELS: u32 = 3;
+
+fn rasterize(buf: &mut Buffer, pool: &mut Pool, tri: &Triangle, u: &Uniforms, model: &Mat4f, proj: &Mat4f) {
+    let dims = (buf.color.width(), buf.color.height());
+    let mut tri = tri.clone();
+    if !vertex_shader(&mut tri, u, model, proj, dims) {
         return;
     };
     sort_tri_points_y(&mut tri);
@@ -237,39 +256,58 @@ fn rasterize(buf: &mut Buffer, mut tri: Triangle, u: &PixelUniforms, model: &Mat
             _ => unreachable!(),
         };
 
-        start_y = start_y.clamp(0, buf.color.height() - 1);
-        end_y = end_y.clamp(0, buf.color.height() - 1);
-        for y in start_y..end_y {
-            let (start_x, end_x) = match i {
-                0 => top_scanline(&tri, y),
-                1 => bottom_scanline(&tri, y),
-                _ => unreachable!(),
-            };
+        start_y = start_y.clamp(0, dims.1 - 1);
+        end_y = end_y.clamp(0, dims.1 - 1);
+        let mut chunks_color = buf.color.chunks_mut((dims.0 * COLOR_BUFFER_CHANNELS) as usize).skip(start_y as usize);
+        let mut chunks_depth = buf.depth.chunks_mut(dims.0 as usize).skip(start_y as usize);
 
-            // YOU CANNOT ROUND HERE. It creates situtations where the start and end x are outside our tri
-            let mut start_x = start_x.ceil() as u32;
-            let mut end_x = end_x.ceil() as u32;
-            if start_x > end_x {
-                swap(&mut start_x, &mut end_x);
-            }
+        pool.scoped(|spawner| {
+            for y in start_y..end_y {
+                let (start_x, end_x) = match i {
+                    0 => top_scanline(&tri, y),
+                    1 => bottom_scanline(&tri, y),
+                    _ => unreachable!(),
+                };
 
-            start_x = start_x.clamp(0, buf.color.width() - 1);
-            end_x = end_x.clamp(0, buf.color.width() - 1);
-            for x in start_x..end_x {
-                let (color, depth) = pixel_shader(&tri, u, &planes, x, y);
-
-                // discard transparency
-                if color[3] == 0 {
-                    continue;
+                // YOU CANNOT ROUND HERE. It creates situtations where the start and end x are outside our tri
+                let mut start_x = start_x.ceil() as u32;
+                let mut end_x = end_x.ceil() as u32;
+                if start_x > end_x {
+                    swap(&mut start_x, &mut end_x);
                 }
 
-                let i = y * dims.0 + x;
-                if depth < buf.depth[i as usize] && depth >= SCREEN_Z {
-                    buf.color.put_pixel(x, y, Rgb::from([color[0], color[1], color[2]]));
-                    buf.depth[i as usize] = depth;
+                start_x = start_x.clamp(0, dims.0 - 1);
+                end_x = end_x.clamp(0, dims.0 - 1);
+
+                let chunk_color = chunks_color.next().unwrap();
+                let chunk_depth = chunks_depth.next().unwrap();
+                let tri = &tri;
+                let planes = &planes;
+
+                let mut scanline = move || for x in start_x..end_x {
+                    let (color, depth) = pixel_shader(tri, u, planes, x, y);
+
+                    // discard transparency
+                    if color[3] == 0 {
+                        continue;
+                    }
+
+                    if depth < chunk_depth[x as usize] && depth >= SCREEN_Z {
+                        chunk_color[(x * COLOR_BUFFER_CHANNELS) as usize] = color[0];
+                        chunk_color[(x * COLOR_BUFFER_CHANNELS) as usize + 1] = color[1];
+                        chunk_color[(x * COLOR_BUFFER_CHANNELS) as usize + 2] = color[2];
+                        chunk_depth[x as usize] = depth;
+                    }
+                };
+
+                if end_x - start_x > SCANLINE_THREAD_TOLERANCE {
+                    //scanline();
+                    spawner.execute(scanline);
+                } else {
+                    scanline();
                 }
             }
-        }
+        });
     }
 
     fn top_scanline(tri: &Triangle, y: u32) -> (f64, f64) {
@@ -326,17 +364,19 @@ fn rasterize(buf: &mut Buffer, mut tri: Triangle, u: &PixelUniforms, model: &Mat
 }
 
 // TODO: properly bring normals into clip space (space of pixel shader), or make their interpolation based on world space (maybe local??)
-fn vertex_shader(tri: &mut Triangle, model: &Mat4f, proj: &Mat4f, dims: (u32, u32)) -> bool {
+fn vertex_shader(tri: &mut Triangle, u: &Uniforms, model: &Mat4f, proj: &Mat4f, dims: (u32, u32)) -> bool {
     let (a, b, c) = (&mut tri.a, &mut tri.b, &mut tri.c);
 
     a.pos = math::mul_point_matrix(&a.pos, model);
     b.pos = math::mul_point_matrix(&b.pos, model);
     c.pos = math::mul_point_matrix(&c.pos, model);
 
-    // no non-uniform scaling is actually done to our points, so normals will be fine too.
-    a.n = math::mul_point_matrix(&a.n.into_point(), &model.no_trans()).into_vec().normalize();
-    b.n = math::mul_point_matrix(&b.n.into_point(), &model.no_trans()).into_vec().normalize();
-    c.n = math::mul_point_matrix(&c.n.into_point(), &model.no_trans()).into_vec().normalize();
+    if !u.static_light {
+        // no non-uniform scaling is actually done to our points, so normals will be fine too.
+        a.n = math::mul_point_matrix(&a.n.into_point(), &model.no_trans()).into_vec().normalize();
+        b.n = math::mul_point_matrix(&b.n.into_point(), &model.no_trans()).into_vec().normalize();
+        c.n = math::mul_point_matrix(&c.n.into_point(), &model.no_trans()).into_vec().normalize();
+    }
 
     // primitive implementation of clipping (so z !>= 0 for perspective division, otherwise weird stuff unfolds)
     if a.pos.z >= 0.0 || b.pos.z >= 0.0 || c.pos.z >= 0.0 {
@@ -371,13 +411,7 @@ From there, it can produce a "weight" for each vertex, to be
 multiplied with our attributes.
 */
 
-struct PixelUniforms {
-    light_dir: Vec3f,
-    diffuse: f64,
-    ambient: f64,
-}
-
-fn pixel_shader(tri: &Triangle, u: &PixelUniforms, planes: &AttributePlanes, x: u32, y: u32) -> ([u8; 4], f64) {
+fn pixel_shader(tri: &Triangle, u: &Uniforms, planes: &AttributePlanes, x: u32, y: u32) -> ([u8; 4], f64) {
     if INTERPOLATE_FAST {
         let n = Vec3f::new(
             lerp_fast(&planes.n_x, x, y),
@@ -408,7 +442,7 @@ fn pixel_shader(tri: &Triangle, u: &PixelUniforms, planes: &AttributePlanes, x: 
             tri.a.n.z * weights.a + tri.b.n.z * weights.b + tri.c.n.z * weights.c,
         );
 
-        let diff = (Vec3f::dot(&n, &u.light_dir.normalize()) * u.diffuse).max(u.ambient);
+        let diff = (Vec3f::dot(&n, &u.light_dir) * u.diffuse).max(u.ambient);
 
         let color = if let Some(tex) = tri.tex {
             let vt_x = tri.a.tex[0] * weights.a + tri.b.tex[0] * weights.b + tri.c.tex[0] * weights.c;
@@ -429,10 +463,12 @@ fn pixel_shader(tri: &Triangle, u: &PixelUniforms, planes: &AttributePlanes, x: 
     }
 }
 
+// slowest function by far
+// optimizations needed
 fn tex_sample(tex: &RgbaImage, x: f64, y: f64) -> [u8; 4] {
     // wrap from 0 to 1
-    let x = x - x.floor();
-    let y = y - y.floor();
+    let x = x.fract();
+    let y = y.fract();
     let px = (x * (tex.width() - 1) as f64) as u32;
     let py = (y * (tex.height() - 1) as f64) as u32;
     tex.get_pixel(px, py).0
@@ -525,16 +561,16 @@ fn plane_from_points(p1: &Point, p2: &Point, p3: &Point, z1: f64, z2: f64, z3: f
 fn solve_lines(l1: &Line, l2: &Line) -> Point {
     // account for lines that are edge cases to the below formula
     if l1.b.is_infinite() {
-        return Point::new_xy(l1.m, solve_y(l2, l1.m))
+        return Point::new_xy(l1.m, solve_y(l2, l1.m));
     }
     if l2.b.is_infinite() {
         return Point::new_xy(l2.m, solve_y(l1, l2.m));
     }
     if l1.m == 0.0 {
-        return Point::new_xy(solve_x(l2, l1.b), l1.b)
+        return Point::new_xy(solve_x(l2, l1.b), l1.b);
     }
     if l2.m == 0.0 {
-        return Point::new_xy(solve_x(l1, l2.b), l2.b)
+        return Point::new_xy(solve_x(l1, l2.b), l2.b);
     }
 
     let y = (l2.b * l1.m - l1.b * l2.m) / (l1.m - l2.m);
@@ -550,7 +586,6 @@ fn solve_y(l: &Line, x: f64) -> f64 {
     l.m * x + l.b
 }
 
-// REMEMBER TO SWAP ALL ATTRIBUTES OF THE TRI ESPECIALLY WHEN NEW ONES ARE ADDED
 fn sort_tri_points_y(tri: &mut Triangle) {
     if tri.a.pos.y > tri.b.pos.y {
         swap(&mut tri.a, &mut tri.b);
