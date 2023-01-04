@@ -1,7 +1,6 @@
 use std::{mem::swap, io::BufReader, fs::File, collections::HashMap};
 use config::Config;
 use image::{RgbImage, RgbaImage, Rgb};
-use scoped_threadpool::Pool;
 use math::{Mat4f, Vec3f};
 use std::time::Instant;
 
@@ -10,6 +9,7 @@ mod math;
 
 // z coord of the "screen" (anything with a smaller z will not be shown)
 const SCREEN_Z: f64 = -1.0;
+const DEPTH_INIT: f64 = 1.0;
 
 struct Buffer {
     color: RgbImage,
@@ -38,7 +38,7 @@ fn main() {
 
     let mut buf = Buffer {
         color: RgbImage::from_pixel(config.width, config.height, Rgb::from(config.clear_color)),
-        depth: vec![1.0; config.width as usize * config.height as usize].into_boxed_slice(),
+        depth: vec![DEPTH_INIT; config.width as usize * config.height as usize].into_boxed_slice(),
     };
 
     let uniforms = Uniforms {
@@ -51,15 +51,13 @@ fn main() {
     let matrices = get_matrices(&config);
     let tri_count = config.triangles.len();
 
-    let mut pool = Pool::new(1);
-
     let start = Instant::now();
     for (i, triangle) in config.triangles.iter().enumerate() {
         if i % 1000 == 0 {
             println!("{:.2}% complete ({}/{} triangles rendered)", (i as f64 / tri_count as f64) * 100.0, i, tri_count);
         }
 
-        rasterize(&mut buf, &mut pool, triangle, &uniforms, &matrices.0, &matrices.1);
+        rasterize(&mut buf, triangle, &uniforms, &matrices.0, &matrices.1);
     }
     println!("Finished rendering {} triangles in {} secs.", tri_count, Instant::now().duration_since(start).as_secs_f64());
 
@@ -225,10 +223,7 @@ impl Point {
     }
 }
 
-const SCANLINE_THREAD_TOLERANCE: u32 = 10;
-const COLOR_BUFFER_CHANNELS: u32 = 3;
-
-fn rasterize(buf: &mut Buffer, pool: &mut Pool, tri: &Triangle, u: &Uniforms, model: &Mat4f, proj: &Mat4f) {
+fn rasterize(buf: &mut Buffer, tri: &Triangle, u: &Uniforms, model: &Mat4f, proj: &Mat4f) {
     let dims = (buf.color.width(), buf.color.height());
     let mut tri = tri.clone();
     if !vertex_shader(&mut tri, u, model, proj, dims) {
@@ -258,56 +253,37 @@ fn rasterize(buf: &mut Buffer, pool: &mut Pool, tri: &Triangle, u: &Uniforms, mo
 
         start_y = start_y.clamp(0, dims.1 - 1);
         end_y = end_y.clamp(0, dims.1 - 1);
-        let mut chunks_color = buf.color.chunks_mut((dims.0 * COLOR_BUFFER_CHANNELS) as usize).skip(start_y as usize);
-        let mut chunks_depth = buf.depth.chunks_mut(dims.0 as usize).skip(start_y as usize);
+        for y in start_y..end_y {
+            let (start_x, end_x) = match i {
+                0 => top_scanline(&tri, y),
+                1 => bottom_scanline(&tri, y),
+                _ => unreachable!(),
+            };
 
-        pool.scoped(|spawner| {
-            for y in start_y..end_y {
-                let (start_x, end_x) = match i {
-                    0 => top_scanline(&tri, y),
-                    1 => bottom_scanline(&tri, y),
-                    _ => unreachable!(),
-                };
-
-                // YOU CANNOT ROUND HERE. It creates situtations where the start and end x are outside our tri
-                let mut start_x = start_x.ceil() as u32;
-                let mut end_x = end_x.ceil() as u32;
-                if start_x > end_x {
-                    swap(&mut start_x, &mut end_x);
-                }
-
-                start_x = start_x.clamp(0, dims.0 - 1);
-                end_x = end_x.clamp(0, dims.0 - 1);
-
-                let chunk_color = chunks_color.next().unwrap();
-                let chunk_depth = chunks_depth.next().unwrap();
-                let tri = &tri;
-                let planes = &planes;
-
-                let mut scanline = move || for x in start_x..end_x {
-                    let (color, depth) = pixel_shader(tri, u, planes, x, y);
-
-                    // discard transparency
-                    if color[3] == 0 {
-                        continue;
-                    }
-
-                    if depth < chunk_depth[x as usize] && depth >= SCREEN_Z {
-                        chunk_color[(x * COLOR_BUFFER_CHANNELS) as usize] = color[0];
-                        chunk_color[(x * COLOR_BUFFER_CHANNELS) as usize + 1] = color[1];
-                        chunk_color[(x * COLOR_BUFFER_CHANNELS) as usize + 2] = color[2];
-                        chunk_depth[x as usize] = depth;
-                    }
-                };
-
-                if end_x - start_x > SCANLINE_THREAD_TOLERANCE {
-                    //scanline();
-                    spawner.execute(scanline);
-                } else {
-                    scanline();
-                }
+            // YOU CANNOT ROUND HERE. It creates situtations where the start and end x are outside our tri
+            let mut start_x = start_x.ceil() as u32;
+            let mut end_x = end_x.ceil() as u32;
+            if start_x > end_x {
+                swap(&mut start_x, &mut end_x);
             }
-        });
+
+            start_x = start_x.clamp(0, dims.0 - 1);
+            end_x = end_x.clamp(0, dims.0 - 1);
+            for x in start_x..end_x {
+                let (color, depth) = pixel_shader(&tri, u, &planes, x, y);
+
+                // discard transparency
+                if color[3] == 0 {
+                    continue;
+                }
+
+                let i = y * dims.0 + x;
+                if depth < buf.depth[i as usize] && depth >= SCREEN_Z {
+                    buf.color.put_pixel(x, y, Rgb::from([color[0], color[1], color[2]]));
+                    buf.depth[i as usize] = depth;
+                }
+            };
+        }
     }
 
     fn top_scanline(tri: &Triangle, y: u32) -> (f64, f64) {
@@ -466,7 +442,7 @@ fn pixel_shader(tri: &Triangle, u: &Uniforms, planes: &AttributePlanes, x: u32, 
 // slowest function by far
 // optimizations needed
 fn tex_sample(tex: &RgbaImage, x: f64, y: f64) -> [u8; 4] {
-    // wrap from 0 to 1
+    // confine coords to be between 0 and 1
     let x = x.fract();
     let y = y.fract();
     let px = (x * (tex.width() - 1) as f64) as u32;
@@ -475,8 +451,8 @@ fn tex_sample(tex: &RgbaImage, x: f64, y: f64) -> [u8; 4] {
 }
 
 fn lerp_fast(p: &Plane, x: u32, y: u32) -> f64 {
-    let p1 = Point::new_xy(x as f64, y as f64);
-    let z = (p.d - p.a * p1.x - p.b * p1.y) / p.c;
+    let point = Point::new_xy(x as f64, y as f64);
+    let z = (p.d - p.a * point.x - p.b * point.y) / p.c;
     z
 }
 
@@ -496,35 +472,35 @@ fn lerp_slow(tri: &Triangle, x: u32, y: u32) -> VertexWeights {
     let ac = line_from_points(a, c);
 
     // distance from each vertex
-    let dist_a = dist(&p, a);
-    let dist_b = dist(&p, b);
-    let dist_c = dist(&p, c);
+    let dist_a = dist_2(&p, a);
+    let dist_b = dist_2(&p, b);
+    let dist_c = dist_2(&p, c);
 
     // line passing through each vertex and our point, then find the point of intersection with opposite side
     let ap = line_from_points(a, &p);
     let ap_bc = solve_lines(&ap, &bc);
-    let max_dist_a = dist(a, &ap_bc);
+    let max_dist_a = dist_2(a, &ap_bc);
 
     let bp = line_from_points(b, &p);
     let bp_ac = solve_lines(&bp, &ac);
-    let max_dist_b = dist(b, &bp_ac);
+    let max_dist_b = dist_2(b, &bp_ac);
 
     let cp = line_from_points(c, &p);
     let cp_ab = solve_lines(&cp, &ab);
-    let max_dist_c = dist(c, &cp_ab);
+    let max_dist_c = dist_2(c, &cp_ab);
 
     // weight vertices based off distance from the point
-    let a_weight = 1.0 - dist_a / max_dist_a;
-    let b_weight = 1.0 - dist_b / max_dist_b;
-    let c_weight = 1.0 - dist_c / max_dist_c;
+    let a_weight = 1.0 - (dist_a / max_dist_a).sqrt();
+    let b_weight = 1.0 - (dist_b / max_dist_b).sqrt();
+    let c_weight = 1.0 - (dist_c / max_dist_c).sqrt();
 
     VertexWeights { a: a_weight, b: b_weight, c: c_weight }
 }
 
-fn dist(a: &Point, b: &Point) -> f64 {
+fn dist_2(a: &Point, b: &Point) -> f64 {
     let diff_x = a.x - b.x;
     let diff_y = a.y - b.y;
-    (diff_x * diff_x + diff_y * diff_y).sqrt()
+    diff_x * diff_x + diff_y * diff_y
 }
 
 // find m and b from two points
@@ -542,6 +518,7 @@ fn line_from_points(p1: &Point, p2: &Point) -> Line {
     Line { m, b }
 }
 
+// only the x and y components of the points being passed in here are used, the z coming from the last args
 fn plane_from_points(p1: &Point, p2: &Point, p3: &Point, z1: f64, z2: f64, z3: f64) -> Plane {
     let v1 = Vec3f::new(p2.x, p2.y, z2) - Vec3f::new(p1.x, p1.y, z1);
     let v2 = Vec3f::new(p3.x, p3.y, z3) - Vec3f::new(p1.x, p1.y, z1);
