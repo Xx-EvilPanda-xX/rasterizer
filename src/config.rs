@@ -20,10 +20,11 @@ pub struct Config<'a> {
     pub trans_y: f64,
     pub trans_z: f64,
     pub light_dir: Vec3f,
-    pub diffuse: f64,
     pub ambient: f64,
+    pub diffuse: f64,
+    pub specular: f64,
+    pub shininess: u32,
     pub triangles: Vec<Triangle<'a>>,
-    pub static_light: bool,
 }
 
 impl<'a> Config<'a> {
@@ -57,9 +58,10 @@ impl<'a> Config<'a> {
         let trans_y = field("trans_y", &mut img_config);
         let trans_z = field("trans_z", &mut img_config);
         let light_dir = field("light_dir", &mut img_config);
-        let diffuse = field("diffuse", &mut img_config);
         let ambient = field("ambient", &mut img_config);
-        let static_light = field("static_light", &mut img_config);
+        let diffuse = field("diffuse", &mut img_config);
+        let specular = field("specular", &mut img_config);
+        let shininess = field("shininess", &mut img_config);
 
         let mut triangles = Vec::new();
 
@@ -91,9 +93,10 @@ impl<'a> Config<'a> {
             trans_y: trans_y.parse().expect("Failed to parse trans_y"),
             trans_z: trans_z.parse().expect("Failed to parse trans_z"),
             light_dir: Vec3f::from_arr(parse_arr(light_dir)),
-            diffuse: diffuse.parse().expect("Failed to parse diffuse"),
             ambient: ambient.parse().expect("Failed to parse ambient"),
-            static_light: static_light.parse().expect("Failed to parse static_light"),
+            diffuse: diffuse.parse().expect("Failed to parse diffuse"),
+            specular: specular.parse().expect("Failed to parse specular"),
+            shininess: shininess.parse().expect("Failed to parse shininess"),
             triangles,
         }
     }
@@ -117,18 +120,21 @@ impl<'a> Triangle<'a> {
         Self {
             a: Vertex {
                 pos: a,
+                pos_world: Point::origin(),
                 n,
                 color: color_a,
                 tex: tex_a,
             },
             b: Vertex {
                 pos: b,
+                pos_world: Point::origin(),
                 color: color_b,
                 n,
                 tex: tex_b,
             },
             c: Vertex {
                 pos: c,
+                pos_world: Point::origin(),
                 color: color_c,
                 n,
                 tex: tex_c,
@@ -307,18 +313,21 @@ fn load_obj<'a>(obj: &str, color_freq: f64, shade_mode: i32, textures: &'a HashM
         triangles.push(Triangle {
             a: Vertex {
                 pos: a,
+                pos_world: Point::origin(),
                 color: color_a,
                 n,
                 tex: [0.0, 0.0]
             },
             b: Vertex {
                 pos: b,
+                pos_world: Point::origin(),
                 color: color_b,
                 n,
                 tex: [0.0, 0.0]
             },
             c: Vertex {
                 pos: c,
+                pos_world: Point::origin(),
                 color: color_c,
                 n,
                 tex: [0.0, 0.0]

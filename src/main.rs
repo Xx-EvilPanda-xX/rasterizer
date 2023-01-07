@@ -43,9 +43,10 @@ fn main() {
 
     let uniforms = Uniforms {
         light_dir: config.light_dir.normalize().inv(),
-        diffuse: config.diffuse,
         ambient: config.ambient,
-        static_light: config.static_light,
+        diffuse: config.diffuse,
+        specular: config.specular,
+        shininess: config.shininess,
     };
 
     let matrices = get_matrices(&config);
@@ -181,6 +182,7 @@ pub struct Triangle<'a> {
 #[derive(Clone, Debug)]
 pub struct Vertex {
     pos: Point,
+    pos_world: Point,
     color: [u8; 3],
     n: Vec3f,
     tex: [f64; 2],
@@ -195,14 +197,18 @@ pub struct AttributePlanes {
     n_z: Plane,
     tex_x: Plane,
     tex_y: Plane,
+    world_x: Plane,
+    world_y: Plane,
+    world_z: Plane,
     depth: Plane,
 }
 
 struct Uniforms {
     light_dir: Vec3f,
-    diffuse: f64,
     ambient: f64,
-    static_light: bool,
+    diffuse: f64,
+    specular: f64,
+    shininess: u32,
 }
 
 impl Point {
@@ -214,6 +220,10 @@ impl Point {
         Self { x, y, z: 0.0 }
     }
 
+    fn origin() -> Self {
+        Self { x: 0.0, y: 0.0, z: 0.0 }
+    }
+
     fn from_arr(a: [f64; 3]) -> Self {
         Self { x: a[0], y: a[1], z: a[2] }
     }
@@ -223,25 +233,29 @@ impl Point {
     }
 }
 
-fn rasterize(buf: &mut Buffer, tri: &Triangle, u: &Uniforms, model: &Mat4f, proj: &Mat4f) {
+fn rasterize(buf: &mut Buffer, triangle: &Triangle, u: &Uniforms, model: &Mat4f, proj: &Mat4f) {
     let dims = (buf.color.width(), buf.color.height());
-    let mut tri = tri.clone();
-    if !vertex_shader(&mut tri, u, model, proj, dims) {
+    let mut tri = triangle.clone();
+    if vertex_shader(&mut tri, model, proj, dims) == VertexShaderResult::Clipped {
+        // trianlge (at least one vertex) was clipped, we cannot continue
         return;
     };
     sort_tri_points_y(&mut tri);
 
     let (a, b, c) = (&tri.a.pos, &tri.b.pos, &tri.c.pos);
     let planes = AttributePlanes {
-        color_r: plane_from_points(a, b, c, tri.a.color[0] as f64, tri.b.color[0] as f64, tri.c.color[0] as f64),
-        color_g: plane_from_points(a, b, c, tri.a.color[1] as f64, tri.b.color[1] as f64, tri.c.color[1] as f64),
-        color_b: plane_from_points(a, b, c, tri.a.color[2] as f64, tri.b.color[2] as f64, tri.c.color[2] as f64),
-        n_x: plane_from_points(a, b, c, tri.a.n.x, tri.b.n.x, tri.c.n.x),
-        n_y: plane_from_points(a, b, c, tri.a.n.y, tri.b.n.y, tri.c.n.y),
-        n_z: plane_from_points(a, b, c, tri.a.n.z, tri.b.n.z, tri.c.n.z),
-        tex_x: plane_from_points(a, b, c, tri.a.tex[0], tri.b.tex[0], tri.c.tex[0]),
-        tex_y: plane_from_points(a, b, c, tri.a.tex[1], tri.b.tex[1], tri.c.tex[1]),
-        depth: plane_from_points(a, b, c, tri.a.pos.z, tri.b.pos.z, tri.c.pos.z),
+        color_r: plane_from_points_z(a, b, c, tri.a.color[0] as f64, tri.b.color[0] as f64, tri.c.color[0] as f64),
+        color_g: plane_from_points_z(a, b, c, tri.a.color[1] as f64, tri.b.color[1] as f64, tri.c.color[1] as f64),
+        color_b: plane_from_points_z(a, b, c, tri.a.color[2] as f64, tri.b.color[2] as f64, tri.c.color[2] as f64),
+        n_x: plane_from_points_z(a, b, c, tri.a.n.x, tri.b.n.x, tri.c.n.x),
+        n_y: plane_from_points_z(a, b, c, tri.a.n.y, tri.b.n.y, tri.c.n.y),
+        n_z: plane_from_points_z(a, b, c, tri.a.n.z, tri.b.n.z, tri.c.n.z),
+        tex_x: plane_from_points_z(a, b, c, tri.a.tex[0], tri.b.tex[0], tri.c.tex[0]),
+        tex_y: plane_from_points_z(a, b, c, tri.a.tex[1], tri.b.tex[1], tri.c.tex[1]),
+        world_x: plane_from_points_z(a, b, c, tri.a.pos_world.x, tri.b.pos_world.x, tri.c.pos_world.x),
+        world_y: plane_from_points_z(a, b, c, tri.a.pos_world.y, tri.b.pos_world.y, tri.c.pos_world.y),
+        world_z: plane_from_points_z(a, b, c, tri.a.pos_world.z, tri.b.pos_world.z, tri.c.pos_world.z),
+        depth: plane_from_points_z(a, b, c, tri.a.pos.z, tri.b.pos.z, tri.c.pos.z),
     };
 
     for i in 0..2 {
@@ -339,24 +353,32 @@ fn rasterize(buf: &mut Buffer, tri: &Triangle, u: &Uniforms, model: &Mat4f, proj
     }
 }
 
-// TODO: properly bring normals into clip space (space of pixel shader), or make their interpolation based on world space (maybe local??)
-fn vertex_shader(tri: &mut Triangle, u: &Uniforms, model: &Mat4f, proj: &Mat4f, dims: (u32, u32)) -> bool {
+#[derive(PartialEq, Eq)]
+enum VertexShaderResult {
+    Ok,
+    Clipped,
+}
+
+// returns: triangle in world space (or nothing if tri is clipped)
+fn vertex_shader(tri: &mut Triangle, model: &Mat4f, proj: &Mat4f, dims: (u32, u32)) -> VertexShaderResult {
     let (a, b, c) = (&mut tri.a, &mut tri.b, &mut tri.c);
 
     a.pos = math::mul_point_matrix(&a.pos, model);
     b.pos = math::mul_point_matrix(&b.pos, model);
     c.pos = math::mul_point_matrix(&c.pos, model);
 
-    if !u.static_light {
-        // no non-uniform scaling is actually done to our points, so normals will be fine too.
-        a.n = math::mul_point_matrix(&a.n.into_point(), &model.no_trans()).into_vec().normalize();
-        b.n = math::mul_point_matrix(&b.n.into_point(), &model.no_trans()).into_vec().normalize();
-        c.n = math::mul_point_matrix(&c.n.into_point(), &model.no_trans()).into_vec().normalize();
-    }
+    a.pos_world = a.pos;
+    b.pos_world = b.pos;
+    c.pos_world = c.pos;
+
+    // no non-uniform scaling is actually done to our points, so normals will be fine too.
+    a.n = math::mul_point_matrix(&a.n.into_point(), &model.no_trans()).into_vec().normalize();
+    b.n = math::mul_point_matrix(&b.n.into_point(), &model.no_trans()).into_vec().normalize();
+    c.n = math::mul_point_matrix(&c.n.into_point(), &model.no_trans()).into_vec().normalize();
 
     // primitive implementation of clipping (so z !>= 0 for perspective division, otherwise weird stuff unfolds)
     if a.pos.z >= 0.0 || b.pos.z >= 0.0 || c.pos.z >= 0.0 {
-        return false;
+        return VertexShaderResult::Clipped;
     }
 
     a.pos = math::mul_point_matrix(&a.pos, proj);
@@ -370,11 +392,11 @@ fn vertex_shader(tri: &mut Triangle, u: &Uniforms, model: &Mat4f, proj: &Mat4f, 
     a.pos.y = (a.pos.y + 1.0) / 2.0 * dims.1 as f64;
     b.pos.y = (b.pos.y + 1.0) / 2.0 * dims.1 as f64;
     c.pos.y = (c.pos.y + 1.0) / 2.0 * dims.1 as f64;
-    true
+    VertexShaderResult::Ok
 }
 
 const FULLY_OPAQUE: u8 = 255;
-const INTERPOLATE_FAST: bool = true;
+const INTERPOLATE_FAST: bool = false;
 
 /*
 interpolate_fast treats our attributes as the z values of our
@@ -389,54 +411,112 @@ multiplied with our attributes.
 
 fn pixel_shader(tri: &Triangle, u: &Uniforms, planes: &AttributePlanes, x: u32, y: u32) -> ([u8; 4], f64) {
     if INTERPOLATE_FAST {
+        let base_color = if let Some(tex) = tri.tex {
+            let vt_x = lerp_fast(&planes.tex_x, x, y);
+            let vt_y = lerp_fast(&planes.tex_y, x, y);
+            tex_sample(tex, vt_x, vt_y)
+        } else {
+            [lerp_fast(&planes.color_r, x, y).round() as u8,
+            lerp_fast(&planes.color_g, x, y).round() as u8,
+            lerp_fast(&planes.color_b, x, y).round() as u8,
+            FULLY_OPAQUE]
+        };
+
         let n = Vec3f::new(
             lerp_fast(&planes.n_x, x, y),
             lerp_fast(&planes.n_y, x, y),
             lerp_fast(&planes.n_z, x, y)
         );
 
-        let diff = (Vec3f::dot(&n, &u.light_dir) * u.diffuse).max(u.ambient);
+        let ambient = u.ambient;
+        let diffuse = Vec3f::dot(&n, &u.light_dir).max(0.0) * u.diffuse;
 
-        let color = if let Some(tex) = tri.tex {
-            let vt_x = lerp_fast(&planes.tex_x, x, y);
-            let vt_y = lerp_fast(&planes.tex_y, x, y);
-            let base = tex_sample(tex, vt_x, vt_y);
-            [(base[0] as f64 * diff) as u8, (base[1] as f64 * diff) as u8, (base[2] as f64 * diff) as u8, base[3]]
-        } else {
-            [(lerp_fast(&planes.color_r, x, y).round() * diff) as u8,
-            (lerp_fast(&planes.color_g, x, y).round() * diff) as u8,
-            (lerp_fast(&planes.color_b, x, y).round() * diff) as u8,
-            FULLY_OPAQUE]
-        };
+        let pix_pos = Point::new(
+            lerp_fast(&planes.world_x, x, y),
+            lerp_fast(&planes.world_y, x, y),
+            lerp_fast(&planes.world_z, x, y)
+        );
+
+        let view_dir = pix_pos.into_vec().normalize().inv();
+        let reflected = reflect(&u.light_dir.inv(), &n);
+        let specular = Vec3f::dot(&view_dir, &reflected).max(0.0).powi(u.shininess as i32) * u.specular;
+
+        let color = mul_color(&base_color, ambient + diffuse + specular);
 
         (color, lerp_fast(&planes.depth, x, y))
     } else {
         let weights = lerp_slow(tri, x, y);
+
+        let base_color = if let Some(tex) = tri.tex {
+            let vt_x = tri.a.tex[0] * weights.a + tri.b.tex[0] * weights.b + tri.c.tex[0] * weights.c;
+            let vt_y = tri.a.tex[1] * weights.a + tri.b.tex[1] * weights.b + tri.c.tex[1] * weights.c;
+            tex_sample(tex, vt_x, vt_y)
+        } else {
+            let a = [tri.a.color[0] as f64, tri.a.color[1] as f64, tri.a.color[2] as f64];
+            let b = [tri.b.color[0] as f64, tri.b.color[1] as f64, tri.b.color[2] as f64];
+            let c = [tri.c.color[0] as f64, tri.c.color[1] as f64, tri.c.color[2] as f64];
+            [(a[0] * weights.a + b[0] * weights.b + c[0] * weights.c).round() as u8,
+            (a[1] * weights.a + b[1] * weights.b + c[1] * weights.c).round() as u8,
+            (a[2] * weights.a + b[2] * weights.b + c[2] * weights.c).round() as u8,
+            FULLY_OPAQUE]
+        };
+
         let n = Vec3f::new(
             tri.a.n.x * weights.a + tri.b.n.x * weights.b + tri.c.n.x * weights.c,
             tri.a.n.y * weights.a + tri.b.n.y * weights.b + tri.c.n.y * weights.c,
             tri.a.n.z * weights.a + tri.b.n.z * weights.b + tri.c.n.z * weights.c,
         );
 
-        let diff = (Vec3f::dot(&n, &u.light_dir) * u.diffuse).max(u.ambient);
+        let ambient = u.ambient;
+        let diffuse = Vec3f::dot(&n, &u.light_dir).max(0.0) * u.diffuse;
 
-        let color = if let Some(tex) = tri.tex {
-            let vt_x = tri.a.tex[0] * weights.a + tri.b.tex[0] * weights.b + tri.c.tex[0] * weights.c;
-            let vt_y = tri.a.tex[1] * weights.a + tri.b.tex[1] * weights.b + tri.c.tex[1] * weights.c;
-            let base = tex_sample(tex, vt_x, vt_y);
-            [(base[0] as f64 * diff) as u8, (base[1] as f64 * diff) as u8, (base[2] as f64 * diff) as u8, base[3]]
-        } else {
-            let a = [tri.a.color[0] as f64, tri.a.color[1] as f64, tri.a.color[2] as f64];
-            let b = [tri.b.color[0] as f64, tri.b.color[1] as f64, tri.b.color[2] as f64];
-            let c = [tri.c.color[0] as f64, tri.c.color[1] as f64, tri.c.color[2] as f64];
-            [((a[0] * weights.a + b[0] * weights.b + c[0] * weights.c).round() * diff) as u8,
-            ((a[1] * weights.a + b[1] * weights.b + c[1] * weights.c).round() * diff) as u8,
-            ((a[2] * weights.a + b[2] * weights.b + c[2] * weights.c).round() * diff) as u8,
-            FULLY_OPAQUE]
-        };
+        let pix_pos = Point::new(
+            tri.a.pos_world.x * weights.a + tri.b.pos_world.x * weights.b + tri.c.pos_world.x * weights.c,
+            tri.a.pos_world.y * weights.a + tri.b.pos_world.y * weights.b + tri.c.pos_world.y * weights.c,
+            tri.a.pos_world.z * weights.a + tri.b.pos_world.z * weights.b + tri.c.pos_world.z * weights.c,
+        );
+
+        let view_dir = pix_pos.into_vec().normalize().inv();
+        let reflected = reflect(&u.light_dir.inv(), &n);
+        let specular = Vec3f::dot(&view_dir, &reflected).max(0.0).powi(u.shininess as i32) * u.specular;
+
+        let color = mul_color(&base_color, ambient + diffuse + specular);
 
         (color, tri.a.pos.z * weights.a + tri.b.pos.z * weights.b + tri.c.pos.z * weights.c)
     }
+}
+
+// all parameters must be normalized
+fn reflect(incoming: &Vec3f, norm: &Vec3f) -> Vec3f {
+    let inc = incoming.inv();
+    // the cos of the angle between our incoming vec and our norm
+    let cos_theta = Vec3f::dot(&inc, &norm);
+    if cos_theta < 0.0 {
+        return reflect(incoming, &norm.inv());
+    }
+
+    // the point along our norm with distance `cos_theta` from the origin
+    let norm_int = Point::new(
+        lerp(0.0, norm.x, cos_theta),
+        lerp(0.0, norm.y, cos_theta),
+        lerp(0.0, norm.z, cos_theta)
+    ).into_vec();
+
+    // vector from our incoming vec to the above point
+    let inc_norm_int = norm_int - inc;
+    let reflected = norm_int + inc_norm_int;
+    reflected
+}
+
+fn lerp(a: f64, b: f64, c: f64) -> f64 {
+    a + c * (b - a)
+}
+
+fn mul_color(color: &[u8; 4], x: f64) -> [u8; 4] {
+    [(color[0] as f64 * x) as u8,
+    (color[1] as f64 * x) as u8,
+    (color[2] as f64 * x) as u8,
+    color[3]]
 }
 
 // slowest function by far
@@ -519,12 +599,16 @@ fn line_from_points(p1: &Point, p2: &Point) -> Line {
 }
 
 // only the x and y components of the points being passed in here are used, the z coming from the last args
-fn plane_from_points(p1: &Point, p2: &Point, p3: &Point, z1: f64, z2: f64, z3: f64) -> Plane {
-    let v1 = Vec3f::new(p2.x, p2.y, z2) - Vec3f::new(p1.x, p1.y, z1);
-    let v2 = Vec3f::new(p3.x, p3.y, z3) - Vec3f::new(p1.x, p1.y, z1);
+fn plane_from_points_z(p1: &Point, p2: &Point, p3: &Point, z1: f64, z2: f64, z3: f64) -> Plane {
+    plane_from_points(&Point::new(p1.x, p1.y, z1), &Point::new(p2.x, p2.y, z2), &Point::new(p3.x, p3.y, z3))
+}
+
+fn plane_from_points(p1: &Point, p2: &Point, p3: &Point) -> Plane {
+    let v1 = Vec3f::new(p2.x, p2.y, p2.z) - Vec3f::new(p1.x, p1.y, p1.z);
+    let v2 = Vec3f::new(p3.x, p3.y, p3.z) - Vec3f::new(p1.x, p1.y, p1.z);
 
     let n = Vec3f::cross(&v1, &v2);
-    let d = n.x * p1.x + n.y * p1.y + n.z * z1;
+    let d = n.x * p1.x + n.y * p1.y + n.z * p1.z;
 
     Plane {
         a: n.x,

@@ -1,5 +1,5 @@
 use std::fmt::{Display, Formatter};
-use std::ops::{Index, IndexMut, Sub};
+use std::ops::{Index, IndexMut, Sub, Add};
 use super::Point;
 
 pub struct Perspective {
@@ -209,6 +209,18 @@ impl Sub for Vec3f {
             x: self.x - rhs.x,
             y: self.y - rhs.y,
             z: self.z - rhs.z,
+        }
+    }
+}
+
+impl Add for Vec3f {
+    type Output = Vec3f;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        Vec3f {
+            x: self.x + rhs.x,
+            y: self.y + rhs.y,
+            z: self.z + rhs.z,
         }
     }
 }
