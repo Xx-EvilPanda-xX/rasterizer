@@ -18,16 +18,16 @@ struct Buffer {
 
 fn main() {
     let args: Vec<_> = std::env::args().collect();
-    if args.len() != 2 && args.len() != 3 {
-        println!("USAGE: {} [out_name] OPTIONAL: [obj_name]", args[0]);
+    if args.len() != 3 && args.len() != 4 {
+        println!("USAGE: {} [config_name] OPTIONAL: [obj_name] [out_name]", args[0]);
         std::process::exit(-1);
     }
 
-    let config_str = get_config(&args[2]);
-    let obj = if args.len() == 3 {
+    let config_str = get_config(&args[1]);
+    let obj = if args.len() == 4 {
         Some(
-            (std::fs::read_to_string(args[2].clone() + ".obj").expect("Failed to located obj file"),
-            std::fs::read_to_string(args[2].clone() + ".mtl").expect("Failed to located obj file"))
+            (std::fs::read_to_string(args[2].clone() + ".obj").expect("Failed to locate obj file"),
+            std::fs::read_to_string(args[2].clone() + ".mtl").expect("Failed to locate mtl file"))
         )
     } else {
         None
@@ -42,11 +42,12 @@ fn main() {
     };
 
     let uniforms = Uniforms {
-        light_dir: config.light_dir.normalize().inv(),
+        light_pos: config.light_pos,
         ambient: config.ambient,
         diffuse: config.diffuse,
         specular: config.specular,
         shininess: config.shininess,
+        legacy: config.legacy
     };
 
     let matrices = get_matrices(&config);
@@ -63,7 +64,7 @@ fn main() {
     println!("Finished rendering {} triangles in {} secs.", tri_count, Instant::now().duration_since(start).as_secs_f64());
 
     image::imageops::flip_vertical_in_place(&mut buf.color);
-    buf.color.save(args[1].clone() + ".png").expect("Failed to save image");
+    buf.color.save(args[args.len() - 1].clone() + ".png").expect("Failed to save image");
 }
 
 fn get_config(name: &str) -> String {
@@ -108,6 +109,10 @@ fn get_tex(mat: &str) -> Result<(String, RgbaImage), ()> {
 }
 
 fn get_matrices(config: &Config) -> (Mat4f, Mat4f) {
+    if config.legacy {
+        return (Mat4f::new(), Mat4f::new());
+    }
+
     let mut trans = Mat4f::new();
     let mut rot_x = Mat4f::new();
     let mut rot_y = Mat4f::new();
@@ -204,11 +209,12 @@ pub struct AttributePlanes {
 }
 
 struct Uniforms {
-    light_dir: Vec3f,
+    light_pos: Vec3f,
     ambient: f64,
     diffuse: f64,
     specular: f64,
     shininess: u32,
+    legacy: bool,
 }
 
 impl Point {
@@ -236,7 +242,7 @@ impl Point {
 fn rasterize(buf: &mut Buffer, triangle: &Triangle, u: &Uniforms, model: &Mat4f, proj: &Mat4f) {
     let dims = (buf.color.width(), buf.color.height());
     let mut tri = triangle.clone();
-    if vertex_shader(&mut tri, model, proj, dims) == VertexShaderResult::Clipped {
+    if vertex_shader(&mut tri, u, model, proj, dims) == VertexShaderResult::Clipped {
         // trianlge (at least one vertex) was clipped, we cannot continue
         return;
     };
@@ -360,7 +366,7 @@ enum VertexShaderResult {
 }
 
 // returns: triangle in world space (or nothing if tri is clipped)
-fn vertex_shader(tri: &mut Triangle, model: &Mat4f, proj: &Mat4f, dims: (u32, u32)) -> VertexShaderResult {
+fn vertex_shader(tri: &mut Triangle, u: &Uniforms, model: &Mat4f, proj: &Mat4f, dims: (u32, u32)) -> VertexShaderResult {
     let (a, b, c) = (&mut tri.a, &mut tri.b, &mut tri.c);
 
     a.pos = math::mul_point_matrix(&a.pos, model);
@@ -377,7 +383,7 @@ fn vertex_shader(tri: &mut Triangle, model: &Mat4f, proj: &Mat4f, dims: (u32, u3
     c.n = math::mul_point_matrix(&c.n.into_point(), &model.no_trans()).into_vec().normalize();
 
     // primitive implementation of clipping (so z !>= 0 for perspective division, otherwise weird stuff unfolds)
-    if a.pos.z >= 0.0 || b.pos.z >= 0.0 || c.pos.z >= 0.0 {
+    if (a.pos.z >= 0.0 || b.pos.z >= 0.0 || c.pos.z >= 0.0) && !u.legacy {
         return VertexShaderResult::Clipped;
     }
 
@@ -396,7 +402,7 @@ fn vertex_shader(tri: &mut Triangle, model: &Mat4f, proj: &Mat4f, dims: (u32, u3
 }
 
 const FULLY_OPAQUE: u8 = 255;
-const INTERPOLATE_FAST: bool = false;
+const INTERPOLATE_FAST: bool = true;
 
 /*
 interpolate_fast treats our attributes as the z values of our
@@ -422,14 +428,11 @@ fn pixel_shader(tri: &Triangle, u: &Uniforms, planes: &AttributePlanes, x: u32, 
             FULLY_OPAQUE]
         };
 
-        let n = Vec3f::new(
+        let norm = Vec3f::new(
             lerp_fast(&planes.n_x, x, y),
             lerp_fast(&planes.n_y, x, y),
             lerp_fast(&planes.n_z, x, y)
         );
-
-        let ambient = u.ambient;
-        let diffuse = Vec3f::dot(&n, &u.light_dir).max(0.0) * u.diffuse;
 
         let pix_pos = Point::new(
             lerp_fast(&planes.world_x, x, y),
@@ -437,12 +440,7 @@ fn pixel_shader(tri: &Triangle, u: &Uniforms, planes: &AttributePlanes, x: u32, 
             lerp_fast(&planes.world_z, x, y)
         );
 
-        let view_dir = pix_pos.into_vec().normalize().inv();
-        let reflected = reflect(&u.light_dir.inv(), &n);
-        let specular = Vec3f::dot(&view_dir, &reflected).max(0.0).powi(u.shininess as i32) * u.specular;
-
-        let color = mul_color(&base_color, ambient + diffuse + specular);
-
+        let color = mul_color(&base_color, calc_lighting(&norm, &pix_pos, u));
         (color, lerp_fast(&planes.depth, x, y))
     } else {
         let weights = lerp_slow(tri, x, y);
@@ -461,14 +459,11 @@ fn pixel_shader(tri: &Triangle, u: &Uniforms, planes: &AttributePlanes, x: u32, 
             FULLY_OPAQUE]
         };
 
-        let n = Vec3f::new(
+        let norm = Vec3f::new(
             tri.a.n.x * weights.a + tri.b.n.x * weights.b + tri.c.n.x * weights.c,
             tri.a.n.y * weights.a + tri.b.n.y * weights.b + tri.c.n.y * weights.c,
             tri.a.n.z * weights.a + tri.b.n.z * weights.b + tri.c.n.z * weights.c,
         );
-
-        let ambient = u.ambient;
-        let diffuse = Vec3f::dot(&n, &u.light_dir).max(0.0) * u.diffuse;
 
         let pix_pos = Point::new(
             tri.a.pos_world.x * weights.a + tri.b.pos_world.x * weights.b + tri.c.pos_world.x * weights.c,
@@ -476,14 +471,24 @@ fn pixel_shader(tri: &Triangle, u: &Uniforms, planes: &AttributePlanes, x: u32, 
             tri.a.pos_world.z * weights.a + tri.b.pos_world.z * weights.b + tri.c.pos_world.z * weights.c,
         );
 
-        let view_dir = pix_pos.into_vec().normalize().inv();
-        let reflected = reflect(&u.light_dir.inv(), &n);
-        let specular = Vec3f::dot(&view_dir, &reflected).max(0.0).powi(u.shininess as i32) * u.specular;
-
-        let color = mul_color(&base_color, ambient + diffuse + specular);
-
+        let color = mul_color(&base_color, calc_lighting(&norm, &pix_pos, u));
         (color, tri.a.pos.z * weights.a + tri.b.pos.z * weights.b + tri.c.pos.z * weights.c)
     }
+}
+
+fn calc_lighting(norm: &Vec3f, pix_pos: &Point, u: &Uniforms) -> f64 {
+    // pixel to light
+    let light_dir = (u.light_pos - pix_pos.into_vec()).normalize();
+
+    let ambient = u.ambient;
+    let diffuse = Vec3f::dot(&norm, &light_dir).max(0.0) * u.diffuse;
+
+    // our cam is always at the origin, so view dir is just the pixel pos (cam to pixel)
+    let view_dir = pix_pos.into_vec().normalize();
+    let reflected = reflect(&light_dir.inv(), &norm);
+    let specular = Vec3f::dot(&view_dir.inv(), &reflected).max(0.0).powi(u.shininess as i32) * u.specular;
+
+    ambient + diffuse + specular
 }
 
 // all parameters must be normalized
@@ -491,11 +496,9 @@ fn reflect(incoming: &Vec3f, norm: &Vec3f) -> Vec3f {
     let inc = incoming.inv();
     // the cos of the angle between our incoming vec and our norm
     let cos_theta = Vec3f::dot(&inc, &norm);
-    if cos_theta < 0.0 {
-        return reflect(incoming, &norm.inv());
-    }
 
     // the point along our norm with distance `cos_theta` from the origin
+    // angle > 90 handles itself because our norm will be inverted due to a negative cos
     let norm_int = Point::new(
         lerp(0.0, norm.x, cos_theta),
         lerp(0.0, norm.y, cos_theta),

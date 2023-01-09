@@ -9,6 +9,7 @@ pub struct Config<'a> {
     pub width: u32,
     pub height: u32,
     pub clear_color: [u8; 3],
+    pub legacy: bool,
     pub fov: f64,
     pub n: f64,
     pub f: f64,
@@ -19,7 +20,7 @@ pub struct Config<'a> {
     pub trans_x: f64,
     pub trans_y: f64,
     pub trans_z: f64,
-    pub light_dir: Vec3f,
+    pub light_pos: Vec3f,
     pub ambient: f64,
     pub diffuse: f64,
     pub specular: f64,
@@ -40,28 +41,32 @@ impl<'a> Config<'a> {
         }
 
         let mut sections = config.split_inclusive("\n\n");
-        let mut img_config = sections.next().expect("missing image config");
+        let mut img_config = sections.next().expect("Render configurations are not present");
 
-        let width = field("width", &mut img_config);
-        let height = field("height", &mut img_config);
-        let clear_color = field("clear_color", &mut img_config);
-        let color_freq = field("color_freq", &mut img_config);
-        let shade_mode = field("shade_mode", &mut img_config);
-        let fov = field("fov", &mut img_config);
-        let n = field("n", &mut img_config);
-        let f = field("f", &mut img_config);
-        let scale = field("scale", &mut img_config);
-        let rot_x = field("rot_x", &mut img_config);
-        let rot_y = field("rot_y", &mut img_config);
-        let rot_z = field("rot_z", &mut img_config);
-        let trans_x = field("trans_x", &mut img_config);
-        let trans_y = field("trans_y", &mut img_config);
-        let trans_z = field("trans_z", &mut img_config);
-        let light_dir = field("light_dir", &mut img_config);
-        let ambient = field("ambient", &mut img_config);
-        let diffuse = field("diffuse", &mut img_config);
-        let specular = field("specular", &mut img_config);
-        let shininess = field("shininess", &mut img_config);
+        let width = eval(field("width", &mut img_config), false, "");
+        let height = eval(field("height", &mut img_config), false, "");
+        let clear_color = eval(field("clear_color", &mut img_config), false, "");
+        let legacy = eval(field("legacy", &mut img_config), false, "");
+
+        let legacy = legacy.parse().expect("Failed to parse legacy");
+
+        let color_freq = eval(field("color_freq", &mut img_config), legacy, "0.0");
+        let shade_mode = eval(field("shade_mode", &mut img_config), legacy, "0");
+        let fov = eval(field("fov", &mut img_config), legacy, "0.0");
+        let n = eval(field("n", &mut img_config), legacy, "0.0");
+        let f = eval(field("f", &mut img_config), legacy, "0.0");
+        let scale = eval(field("scale", &mut img_config), legacy, "0.0");
+        let rot_x = eval(field("rot_x", &mut img_config), legacy, "0.0");
+        let rot_y = eval(field("rot_y", &mut img_config), legacy, "0.0");
+        let rot_z = eval(field("rot_z", &mut img_config), legacy, "0.0");
+        let trans_x = eval(field("trans_x", &mut img_config), legacy, "0.0");
+        let trans_y = eval(field("trans_y", &mut img_config), legacy, "0.0");
+        let trans_z = eval(field("trans_z", &mut img_config), legacy, "0.0");
+        let light_pos = eval(field("light_pos", &mut img_config), legacy, "[0.0,0.0,0.0]");
+        let ambient = eval(field("ambient", &mut img_config), legacy, "1.0");
+        let diffuse = eval(field("diffuse", &mut img_config), legacy, "0.0");
+        let specular = eval(field("specular", &mut img_config), legacy, "0.0");
+        let shininess = eval(field("shininess", &mut img_config), legacy, "0");
 
         let mut triangles = Vec::new();
 
@@ -82,6 +87,7 @@ impl<'a> Config<'a> {
             width: width.parse().expect("Failed to parse width"),
             height: height.parse().expect("Failed to parse height"),
             clear_color: parse_arr(clear_color),
+            legacy,
             fov: fov.parse().expect("Failed to parse height"),
             n: n.parse().expect("Failed to parse n"),
             f: f.parse().expect("Failed to parse f"),
@@ -92,7 +98,7 @@ impl<'a> Config<'a> {
             trans_x: trans_x.parse().expect("Failed to parse trans_x"),
             trans_y: trans_y.parse().expect("Failed to parse trans_y"),
             trans_z: trans_z.parse().expect("Failed to parse trans_z"),
-            light_dir: Vec3f::from_arr(parse_arr(light_dir)),
+            light_pos: Vec3f::from_arr(parse_arr(light_pos)),
             ambient: ambient.parse().expect("Failed to parse ambient"),
             diffuse: diffuse.parse().expect("Failed to parse diffuse"),
             specular: specular.parse().expect("Failed to parse specular"),
@@ -103,16 +109,13 @@ impl<'a> Config<'a> {
 }
 
 impl<'a> Triangle<'a> {
-    pub fn from_config(mut config: &str, /* texture: Option<&'a image::RgbaImage> */) -> Self {
-        let a = Point::from_arr(parse_arr(field("a", &mut config)));
-        let b = Point::from_arr(parse_arr(field("b", &mut config)));
-        let c = Point::from_arr(parse_arr(field("c", &mut config)));
-        let color_a = parse_arr(field("color_a", &mut config));
-        let color_b = parse_arr(field("color_b", &mut config));
-        let color_c = parse_arr(field("color_c", &mut config));
-        let tex_a = parse_arr(field("tex_a", &mut config));
-        let tex_b = parse_arr(field("tex_b", &mut config));
-        let tex_c = parse_arr(field("tex_c", &mut config));
+    pub fn from_config(mut config: &str) -> Self {
+        let a = Point::from_arr(parse_arr(eval(field("a", &mut config), false, "")));
+        let b = Point::from_arr(parse_arr(eval(field("b", &mut config), false, "")));
+        let c = Point::from_arr(parse_arr(eval(field("c", &mut config), false, "")));
+        let color_a = parse_arr(eval(field("color_a", &mut config), false, ""));
+        let color_b = parse_arr(eval(field("color_b", &mut config), false, ""));
+        let color_c = parse_arr(eval(field("color_c", &mut config), false, ""));
 
         let ab = Vec3f::new(b.x, b.y, b.z) - Vec3f::new(a.x, a.y, a.z);
         let ac = Vec3f::new(c.x, c.y, c.z) - Vec3f::new(a.x, a.y, a.z);
@@ -123,25 +126,80 @@ impl<'a> Triangle<'a> {
                 pos_world: Point::origin(),
                 n,
                 color: color_a,
-                tex: tex_a,
+                tex: [0.0, 0.0],
             },
             b: Vertex {
                 pos: b,
                 pos_world: Point::origin(),
                 color: color_b,
                 n,
-                tex: tex_b,
+                tex: [0.0, 0.0],
             },
             c: Vertex {
                 pos: c,
                 pos_world: Point::origin(),
                 color: color_c,
                 n,
-                tex: tex_c,
+                tex: [0.0, 0.0],
             },
             tex: None,
         }
     }
+}
+
+fn eval<'a>(field: Result<&'a str, FieldError>, legacy: bool, default: &'a str) -> &'a str {
+    match field {
+        Ok(field) => field,
+        Err(e) => {
+            if legacy {
+                default
+            } else {
+                match e {
+                    FieldError::Missing(missed) => {
+                        println!("Missing field `{}`", missed);
+                        print_field_help();
+                        std::process::exit(-1);
+                    }
+                    FieldError::MissingNewline => {
+                        println!("Missing newline after field");
+                        std::process::exit(-1);
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn print_field_help() {
+    println!("Fields should be layout like so for the render config:");
+    println!("width = ?
+height = ?
+clear_color = [?, ?, ?]
+legacy = ?
+color_freq = ?
+shade_mode = ?
+fov = ?
+n = ?
+f = ?
+scale = ?
+rot_x = ?
+rot_y = ?
+rot_z = ?
+trans_x = ?
+trans_y = ?
+trans_z = ?
+light_pos = [?, ?, ?]
+ambient = ?
+diffuse = ?
+specular = ?
+shininess = ?");
+    println!("\nAnd like so for triangle configs:");
+    println!("a = [?, ?, ?]
+b = [?, ?, ?]
+c = [?, ?, ?]
+color_a = [?, ?, ?]
+color_a = [?, ?, ?]
+color_a = [?, ?, ?]");
 }
 
 fn parse_arr<T: Copy + Default + FromStr, const N: usize>(mut s: &str) -> [T; N]
@@ -154,7 +212,7 @@ fn parse_arr<T: Copy + Default + FromStr, const N: usize>(mut s: &str) -> [T; N]
     let mut out = [T::default(); N];
     for i in 0..N {
         let e = elems.next().expect("not enough array elements");
-        out[i] = e.parse().expect("Failed to parse array element");
+        out[i] = e.parse().expect("failed to parse array element");
     }
 
     if elems.next().is_some() {
@@ -164,12 +222,27 @@ fn parse_arr<T: Copy + Default + FromStr, const N: usize>(mut s: &str) -> [T; N]
     out
 }
 
-pub fn field<'a>(name: &str, args: &mut &'a str) -> &'a str {
-    *args = args.strip_prefix(&format!("{}=", name)).expect(&format!("missing {}", name));
-    let newline = args.find('\n').expect("missing newline");
+enum FieldError {
+    Missing(String),
+    MissingNewline,
+}
+
+fn field<'a>(name: &str, args: &mut &'a str) -> Result<&'a str, FieldError> {
+    *args = if let Some(new_args) = args.strip_prefix(&format!("{}=", name)) {
+        new_args
+    } else {
+        return Err(FieldError::Missing(format!("{}", name)));
+    };
+
+    let newline = if let Some(newline) = args.find('\n') {
+        newline
+    } else {
+        return Err(FieldError::MissingNewline);
+    };
+
     let f = &args[..newline];
     *args = &args[newline + 1..];
-    f
+    Ok(f)
 }
 
 fn load_obj<'a>(obj: &str, color_freq: f64, shade_mode: i32, textures: &'a HashMap<String, RgbaImage>) -> Vec<Triangle<'a>> {

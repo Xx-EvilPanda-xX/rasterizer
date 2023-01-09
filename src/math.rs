@@ -53,7 +53,7 @@ pub fn frustum(p: &Perspective) -> Mat4f {
 }
 
 pub fn mul_point_matrix(point: &Point, mat: &Mat4f) -> Point {
-    let mut out = Point::new(0.0, 0.0, 0.0);
+    let mut out = Point::origin();
 
     out.x = point.x * mat[0][0] + point.y * mat[0][1] + point.z * mat[0][2] + mat[0][3];
     out.y = point.x * mat[1][0] + point.y * mat[1][1] + point.z * mat[1][2] + mat[1][3];
