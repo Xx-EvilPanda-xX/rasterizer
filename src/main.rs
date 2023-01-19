@@ -373,6 +373,7 @@ fn vertex_shader_pass(tris: &mut Vec<Triangle>, u: &Uniforms, dims: (u32, u32)) 
 fn rasterize(buf: &mut SubBuffer, tri: &Triangle, occ: &[Triangle], u: &Uniforms) -> u32 {
     let dims = buf.dims;
     let (a, b, c) = (&tri.a.pos, &tri.b.pos, &tri.c.pos);
+    let (a_world, b_world, c_world) = (&tri.a.pos_world, &tri.b.pos_world, &tri.c.pos_world);
     let planes = AttributePlanes {
         color_r: plane_from_points_z(a, b, c, tri.a.color[0] as f64, tri.b.color[0] as f64, tri.c.color[0] as f64),
         color_g: plane_from_points_z(a, b, c, tri.a.color[1] as f64, tri.b.color[1] as f64, tri.c.color[1] as f64),
@@ -380,8 +381,8 @@ fn rasterize(buf: &mut SubBuffer, tri: &Triangle, occ: &[Triangle], u: &Uniforms
         n_x: plane_from_points_z(a, b, c, tri.a.n.x, tri.b.n.x, tri.c.n.x),
         n_y: plane_from_points_z(a, b, c, tri.a.n.y, tri.b.n.y, tri.c.n.y),
         n_z: plane_from_points_z(a, b, c, tri.a.n.z, tri.b.n.z, tri.c.n.z),
-        tex_x: plane_from_points_z(a, b, c, tri.a.tex[0], tri.b.tex[0], tri.c.tex[0]),
-        tex_y: plane_from_points_z(a, b, c, tri.a.tex[1], tri.b.tex[1], tri.c.tex[1]),
+        tex_x: plane_from_points_z(a_world, b_world, c_world, tri.a.tex[0], tri.b.tex[0], tri.c.tex[0]),
+        tex_y: plane_from_points_z(a_world, b_world, c_world, tri.a.tex[1], tri.b.tex[1], tri.c.tex[1]),
         pos_x: plane_from_points_z(a, b, c, tri.a.pos_clip.x, tri.b.pos_clip.x, tri.c.pos_clip.x),
         pos_y: plane_from_points_z(a, b, c, tri.a.pos_clip.y, tri.b.pos_clip.y, tri.c.pos_clip.y),
         pos_z: plane_from_points_z(a, b, c, tri.a.pos_clip.z, tri.b.pos_clip.z, tri.c.pos_clip.z),
@@ -416,7 +417,7 @@ fn rasterize(buf: &mut SubBuffer, tri: &Triangle, occ: &[Triangle], u: &Uniforms
             for x in start_x..end_x {
                 // localize the index to the sub buffer
                 let i = (y - buf.start_y) * dims.0 + x;
-                let depth = lerp_fast(&planes.pos_z, x, y);
+                let depth = lerp_fast(&planes.pos_z, x as f64, y as f64);
                 if depth < buf.depth[i as usize] && depth >= SCREEN_Z {
                     let color = pixel_shader(tri, occ, u, &planes, x, y);
 
@@ -537,6 +538,7 @@ fn vertex_shader(tri: &mut Triangle, u: &Uniforms, dims: (u32, u32)) -> VertexSh
 }
 
 const FULLY_OPAQUE: u8 = 255;
+// Setting this to false is deprecated. It will result in inaccurate texture sampling.
 const INTERPOLATE_FAST: bool = true;
 const MU: f64 = 0.0000001;
 
@@ -552,10 +554,29 @@ multiplied with our attributes.
 */
 
 fn pixel_shader(tri: &Triangle, occ: &[Triangle], u: &Uniforms, planes: &AttributePlanes, x: u32, y: u32) -> [u8; 4] {
+    let (x, y) = (x as f64, y as f64);
+
     if INTERPOLATE_FAST {
+        let norm = Vec3f::new(
+            lerp_fast(&planes.n_x, x, y),
+            lerp_fast(&planes.n_y, x, y),
+            lerp_fast(&planes.n_z, x, y),
+        );
+
+        let pix_clip_pos = Point3d::new(
+            lerp_fast(&planes.pos_x, x, y),
+            lerp_fast(&planes.pos_y, x, y),
+            lerp_fast(&planes.pos_z, x, y),
+        );
+
+        let pix_world_pos = math::mul_point_matrix(&pix_clip_pos, &u.inv_proj);
+
         let base_color = if let Some(tex) = tri.tex {
-            let vt_x = lerp_fast(&planes.tex_x, x, y);
-            let vt_y = lerp_fast(&planes.tex_y, x, y);
+            // we calculate texture coords with respect to our pixel's world space position rather than it's clip or raster space position
+            // because otherwise we get incorrect results.
+            let (x_world, y_world) = (pix_world_pos.x, pix_world_pos.y);
+            let vt_x = lerp_fast(&planes.tex_x, x_world, y_world);
+            let vt_y = lerp_fast(&planes.tex_y, x_world, y_world);
             tex_sample(tex, vt_x, vt_y)
         } else {
             [lerp_fast(&planes.color_r, x, y).round() as u8,
@@ -563,27 +584,6 @@ fn pixel_shader(tri: &Triangle, occ: &[Triangle], u: &Uniforms, planes: &Attribu
             lerp_fast(&planes.color_b, x, y).round() as u8,
             FULLY_OPAQUE]
         };
-
-        let norm = Vec3f::new(
-            lerp_fast(&planes.n_x, x, y),
-            lerp_fast(&planes.n_y, x, y),
-            lerp_fast(&planes.n_z, x, y),
-        );
-
-        // WHY THE FUCK IS THIS WRONG???????????
-        // ok i understand why its wrong now but how to fix?
-        // it simply doesn't work to interpolate between world space coords in clip space and expect them to be constant
-        // our world plane changes with the clip positions of the tri vertices so a pixel will be a different world space from different angles
-        // we need to find a different way of getting pixel pos
-        // norms might to wrong too
-        // lmao now that i think about it makes litterally no sense to get world space coords from clip space
-        let pix_clip_pos= Point3d::new(
-            lerp_fast(&planes.pos_x, x, y),
-            lerp_fast(&planes.pos_y, x, y),
-            lerp_fast(&planes.pos_z, x, y),
-        );
-
-        let pix_world_pos = math::mul_point_matrix(&pix_clip_pos, &u.inv_proj);
 
         let color = mul_color(&base_color, calc_lighting(&norm, &pix_world_pos, u, occ));
         color
@@ -735,7 +735,7 @@ fn mul_color(color: &[u8; 4], x: f64) -> [u8; 4] {
 }
 
 // slowest function by far
-// optimizations needed
+// optimizations needed (likely not possible)
 fn tex_sample(tex: &RgbaImage, x: f64, y: f64) -> [u8; 4] {
     // confine coords to be between 0 and 1
     let x = x.fract();
@@ -745,7 +745,7 @@ fn tex_sample(tex: &RgbaImage, x: f64, y: f64) -> [u8; 4] {
     tex.get_pixel(px, py).0
 }
 
-fn lerp_fast(p: &Plane, x: u32, y: u32) -> f64 {
+fn lerp_fast(p: &Plane, x: f64, y: f64) -> f64 {
     let point = Point2d::new(x as f64, y as f64);
     let z = (p.d - p.a * point.x - p.b * point.y) / p.c;
     z
@@ -757,9 +757,10 @@ struct VertexWeights {
     c: f64,
 }
 
-fn lerp_slow(tri: &Triangle, x: u32, y: u32) -> VertexWeights {
+// returns vertex weights (only in clip space which doesn't allow proper texture sampling)
+fn lerp_slow(tri: &Triangle, x: f64, y: f64) -> VertexWeights {
     let (a, b, c) = (&tri.a.pos.into_2d(), &tri.b.pos.into_2d(), &tri.c.pos.into_2d());
-    let p = Point2d::new(x as f64, y as f64);
+    let p = Point2d::new(x, y);
 
     // sides of our triangle
     let ab = line_2d_from_points(a, b);
