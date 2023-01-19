@@ -3,7 +3,7 @@ use std::{str::FromStr, collections::HashMap};
 use core::fmt::Debug;
 use image::RgbaImage;
 
-use super::{Point, Triangle, Vertex, math::Vec3f};
+use super::{Point3d, Triangle, Vertex, math::Vec3f};
 
 pub struct Config<'a> {
     pub width: u32,
@@ -20,11 +20,14 @@ pub struct Config<'a> {
     pub trans_x: f64,
     pub trans_y: f64,
     pub trans_z: f64,
-    pub light_pos: Vec3f,
+    pub light_pos: Point3d,
     pub ambient: f64,
     pub diffuse: f64,
     pub specular: f64,
     pub shininess: u32,
+    pub render_shadows: bool,
+    pub render_threads: u32,
+    pub show_progress: bool,
     pub triangles: Vec<Triangle<'a>>,
 }
 
@@ -67,6 +70,9 @@ impl<'a> Config<'a> {
         let diffuse = eval(field("diffuse", &mut img_config), legacy, "0.0");
         let specular = eval(field("specular", &mut img_config), legacy, "0.0");
         let shininess = eval(field("shininess", &mut img_config), legacy, "0");
+        let render_shadows = eval(field("render_shadows", &mut img_config), legacy, "false");
+        let render_threads = eval(field("render_threads", &mut img_config), legacy, "1");
+        let show_progess = eval(field("show_progress", &mut img_config), legacy, "false");
 
         let mut triangles = Vec::new();
 
@@ -98,11 +104,14 @@ impl<'a> Config<'a> {
             trans_x: trans_x.parse().expect("Failed to parse trans_x"),
             trans_y: trans_y.parse().expect("Failed to parse trans_y"),
             trans_z: trans_z.parse().expect("Failed to parse trans_z"),
-            light_pos: Vec3f::from_arr(parse_arr(light_pos)),
+            light_pos: Point3d::from_arr(parse_arr(light_pos)),
             ambient: ambient.parse().expect("Failed to parse ambient"),
             diffuse: diffuse.parse().expect("Failed to parse diffuse"),
             specular: specular.parse().expect("Failed to parse specular"),
             shininess: shininess.parse().expect("Failed to parse shininess"),
+            render_shadows: render_shadows.parse().expect("Failed to parse render_shadows"),
+            render_threads: render_threads.parse().expect("Failed to parse render_threads"),
+            show_progress: show_progess.parse().expect("Failed to parse show_progress"),
             triangles,
         }
     }
@@ -110,9 +119,9 @@ impl<'a> Config<'a> {
 
 impl<'a> Triangle<'a> {
     pub fn from_config(mut config: &str) -> Self {
-        let a = Point::from_arr(parse_arr(eval(field("a", &mut config), false, "")));
-        let b = Point::from_arr(parse_arr(eval(field("b", &mut config), false, "")));
-        let c = Point::from_arr(parse_arr(eval(field("c", &mut config), false, "")));
+        let a = Point3d::from_arr(parse_arr(eval(field("a", &mut config), false, "")));
+        let b = Point3d::from_arr(parse_arr(eval(field("b", &mut config), false, "")));
+        let c = Point3d::from_arr(parse_arr(eval(field("c", &mut config), false, "")));
         let color_a = parse_arr(eval(field("color_a", &mut config), false, ""));
         let color_b = parse_arr(eval(field("color_b", &mut config), false, ""));
         let color_c = parse_arr(eval(field("color_c", &mut config), false, ""));
@@ -123,26 +132,30 @@ impl<'a> Triangle<'a> {
         Self {
             a: Vertex {
                 pos: a,
-                pos_world: Point::origin(),
-                n,
+                pos_world: Point3d::origin(),
+                pos_clip: Point3d::origin(),
                 color: color_a,
+                n,
                 tex: [0.0, 0.0],
             },
             b: Vertex {
                 pos: b,
-                pos_world: Point::origin(),
+                pos_world: Point3d::origin(),
+                pos_clip: Point3d::origin(),
                 color: color_b,
                 n,
                 tex: [0.0, 0.0],
             },
             c: Vertex {
                 pos: c,
-                pos_world: Point::origin(),
+                pos_world: Point3d::origin(),
+                pos_clip: Point3d::origin(),
                 color: color_c,
                 n,
                 tex: [0.0, 0.0],
             },
             tex: None,
+            clipped: false,
         }
     }
 }
@@ -267,7 +280,7 @@ fn load_obj<'a>(obj: &str, color_freq: f64, shade_mode: i32, textures: &'a HashM
             let x = elems.next().unwrap().trim().parse().unwrap();
             let y = elems.next().unwrap().trim().parse().unwrap();
             let z = elems.next().unwrap().trim().parse().unwrap();
-            vertices.push(Point::new(x, y, z));
+            vertices.push(Point3d::new(x, y, z));
         } else if line.starts_with("vt ") {
             let v = line.strip_prefix("vt ").unwrap();
             let mut elems = v.split(' ');
@@ -386,26 +399,30 @@ fn load_obj<'a>(obj: &str, color_freq: f64, shade_mode: i32, textures: &'a HashM
         triangles.push(Triangle {
             a: Vertex {
                 pos: a,
-                pos_world: Point::origin(),
+                pos_world: Point3d::origin(),
+                pos_clip: Point3d::origin(),
                 color: color_a,
                 n,
                 tex: [0.0, 0.0]
             },
             b: Vertex {
                 pos: b,
-                pos_world: Point::origin(),
+                pos_world: Point3d::origin(),
+                pos_clip: Point3d::origin(),
                 color: color_b,
                 n,
                 tex: [0.0, 0.0]
             },
             c: Vertex {
                 pos: c,
-                pos_world: Point::origin(),
+                pos_world: Point3d::origin(),
+                pos_clip: Point3d::origin(),
                 color: color_c,
                 n,
-                tex: [0.0, 0.0]
+                tex: [0.0, 0.0],
             },
             tex: None,
+            clipped: false,
         });
     }
 

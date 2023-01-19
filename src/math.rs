@@ -1,6 +1,6 @@
 use std::fmt::{Display, Formatter};
 use std::ops::{Index, IndexMut, Sub, Add};
-use super::Point;
+use super::Point3d;
 
 pub struct Perspective {
     n: f64,
@@ -52,8 +52,8 @@ pub fn frustum(p: &Perspective) -> Mat4f {
     mat
 }
 
-pub fn mul_point_matrix(point: &Point, mat: &Mat4f) -> Point {
-    let mut out = Point::origin();
+pub fn mul_point_matrix(point: &Point3d, mat: &Mat4f) -> Point3d {
+    let mut out = Point3d::origin();
 
     out.x = point.x * mat[0][0] + point.y * mat[0][1] + point.z * mat[0][2] + mat[0][3];
     out.y = point.x * mat[1][0] + point.y * mat[1][1] + point.z * mat[1][2] + mat[1][3];
@@ -118,6 +118,54 @@ impl Mat4f {
         new[2][3] = 0.0;
         new
     }
+
+    // Gauss-Jordan Method
+    pub fn inverse(&self) -> Self {
+        let mut aug_mat = [[0.0; 8]; 4];
+
+        for i in 0..4 {
+            for j in 0..4 {
+                aug_mat[i][j] = self[i][j];
+            }
+            aug_mat[i][i + 4] = 1.0;
+        }
+
+        for i in (1..4).rev() {
+            if aug_mat[i - 1][0] < aug_mat[i][0] {
+                let tmp = aug_mat[i - 1];
+                aug_mat[i - 1] = aug_mat[i];
+                aug_mat[i] = tmp;
+            }
+        }
+
+        for i in 0..4 {
+            for j in 0..4 {
+                if j != i {
+                    let div = aug_mat[j][i] / aug_mat[i][i];
+                    for k in 0..8 {
+                        aug_mat[j][k] -= aug_mat[i][k] * div;
+                    }
+                }
+            }
+        }
+
+        for i in 0..4 {
+            let diag = aug_mat[i][i];
+            for j in 0..8 {
+                aug_mat[i][j] /= diag;
+            }
+        }
+
+        let mut out = Self::new();
+
+        for i in 0..4 {
+            for j in 0..4 {
+                out[i][j] = aug_mat[i][j + 4];
+            }
+        }
+
+        out
+    }
 }
 
 impl Index<usize> for Mat4f {
@@ -155,14 +203,6 @@ impl Vec3f {
         }
     }
 
-    pub fn from_arr(x: [f64; 3]) -> Self {
-        Self {
-            x: x[0],
-            y: x[1],
-            z: x[2],
-        }
-    }
-
     pub fn dot(a: &Vec3f, b: &Vec3f) -> f64 {
         a.x * b.x + a.y * b.y + a.z * b.z
     }
@@ -196,8 +236,8 @@ impl Vec3f {
         }
     }
 
-    pub fn into_point(&self) -> Point {
-        Point { x: self.x, y: self.y, z: self.z }
+    pub fn into_point(&self) -> Point3d {
+        Point3d { x: self.x, y: self.y, z: self.z }
     }
 }
 
@@ -222,6 +262,12 @@ impl Add for Vec3f {
             y: self.y + rhs.y,
             z: self.z + rhs.z,
         }
+    }
+}
+
+impl Default for Vec3f {
+    fn default() -> Self {
+        Vec3f { x: 0.0, y: 0.0, z: 0.0 }
     }
 }
 

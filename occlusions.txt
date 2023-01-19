@@ -1,0 +1,63 @@
+    // if u.render_shadows {
+    //     let mut occlusion_vecs = vec![Vec::new(); tris.len()];
+    //     std::thread::scope(|spawner| {
+    //         let chunk_size = tris.len() / threads as usize;
+    //         for (tris_chunk, occlusion_chunk) in tris.chunks(chunk_size).zip(occlusion_vecs.chunks_mut(chunk_size)) {
+    //             spawner.spawn(|| {
+    //                 for (i, triangle) in tris_chunk.iter().enumerate() {
+    //                     // the tetrahedron formed by the triangle being rendered and the light source (anything in this tetrahedron could occlude the triangle)
+    //                     // let a = tri.a, b = tri.b, c = tri.c, l = light position
+    //                     let (a, b, c, l) = (&triangle.a.pos_world, &triangle.b.pos_world, &triangle.c.pos_world, &u.light_pos);
+    //                     let abc = plane_from_points(a, b, c);
+    //                     let abl = plane_from_points(a, b, l);
+    //                     let acl = plane_from_points(a, c, l);
+    //                     let bcl = plane_from_points(b, c, l);
+    //                     let occlusions: Vec<_> = tris.iter().map(|tri| [tri.a.pos_world, tri.b.pos_world, tri.c.pos_world]).filter(|&q_tri| {
+    //                         // edges of our q_tri in 3d
+    //                         let (qa, qb, qc) = (&q_tri[0], &q_tri[1], &q_tri[2]);
+    //                         let ab = line_3d_from_points(qa, qb);
+    //                         let ac = line_3d_from_points(qa, qc);
+    //                         let bc = line_3d_from_points(qb, qc);
+
+    //                         // all possible itersections between the edges of q_tri and the tetrahedron
+    //                         let i_ab_abc = solve_line_plane(&ab, &abc);
+    //                         let i_ac_abc = solve_line_plane(&ac, &abc);
+    //                         let i_bc_abc = solve_line_plane(&bc, &abc);
+    //                         let i_ab_abl = solve_line_plane(&ab, &abl);
+    //                         let i_ac_abl = solve_line_plane(&ac, &abl);
+    //                         let i_bc_abl = solve_line_plane(&bc, &abl);
+    //                         let i_ab_acl = solve_line_plane(&ab, &acl);
+    //                         let i_ac_acl = solve_line_plane(&ac, &acl);
+    //                         let i_bc_acl = solve_line_plane(&bc, &acl);
+    //                         let i_ab_bcl = solve_line_plane(&ab, &bcl);
+    //                         let i_ac_bcl = solve_line_plane(&ac, &bcl);
+    //                         let i_bc_bcl = solve_line_plane(&bc, &bcl);
+
+    //                         is_point_between(qa, qb, &i_ab_abc)/* && point_in_tri(&i_ab_abc, [a, b, c]))*/ ||
+    //                         is_point_between(qa, qb, &i_ab_abl)/* && point_in_tri(&i_ab_abl, [a, b, l]))*/ ||
+    //                         is_point_between(qa, qb, &i_ab_acl)/* && point_in_tri(&i_ab_acl, [a, c, l]))*/ ||
+    //                         is_point_between(qa, qb, &i_ab_bcl)/* && point_in_tri(&i_ab_bcl, [b, c, l]))*/ ||
+    //                         is_point_between(qa, qc, &i_ac_abc)/* && point_in_tri(&i_ac_abc, [a, b, c]))*/ ||
+    //                         is_point_between(qa, qc, &i_ac_abl)/* && point_in_tri(&i_ac_abl, [a, b, l]))*/ ||
+    //                         is_point_between(qa, qc, &i_ac_acl)/* && point_in_tri(&i_ac_acl, [a, c, l]))*/ ||
+    //                         is_point_between(qa, qc, &i_ac_bcl)/* && point_in_tri(&i_ac_bcl, [b, c, l]))*/ ||
+    //                         is_point_between(qb, qc, &i_bc_abc)/* && point_in_tri(&i_bc_abc, [a, b, c]))*/ ||
+    //                         is_point_between(qb, qc, &i_bc_abl)/* && point_in_tri(&i_bc_abl, [a, b, l]))*/ ||
+    //                         is_point_between(qb, qc, &i_bc_acl)/* && point_in_tri(&i_bc_acl, [a, c, l]))*/ ||
+    //                         is_point_between(qb, qc, &i_bc_bcl)/* && point_in_tri(&i_bc_bcl, [b, c, l]))*/
+
+    //                     }).collect();
+    //                     occlusion_chunk[i] = occlusions;
+
+    //                     if i % (tris.len() / 100) == 0 {
+    //                         println!("{:.2}% complete ({}/{} triangles proccessed)", (i as f64 / tris.len() as f64) * 100.0, i, tris.len());
+    //                     }
+    //                 }
+    //             });
+    //         }
+    //     });
+
+    //     for (i, occlusions) in occlusion_vecs.into_iter().enumerate() {
+    //         tris[i].occlusions = occlusions;
+    //     }
+    // }
