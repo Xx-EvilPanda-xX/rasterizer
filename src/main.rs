@@ -55,10 +55,6 @@ fn main() {
 
     let matrices = get_matrices(&config);
     let inv_proj = matrices.1.inverse();
-    println!("[{:.3} {:.3} {:.3} {:.3}]", inv_proj[0][0], inv_proj[0][1], inv_proj[0][2], inv_proj[0][3]);
-    println!("[{:.3} {:.3} {:.3} {:.3}]", inv_proj[1][0], inv_proj[1][1], inv_proj[1][2], inv_proj[1][3]);
-    println!("[{:.3} {:.3} {:.3} {:.3}]", inv_proj[2][0], inv_proj[2][1], inv_proj[2][2], inv_proj[2][3]);
-    println!("[{:.3} {:.3} {:.3} {:.3}]", inv_proj[3][0], inv_proj[3][1], inv_proj[3][2], inv_proj[3][3]);
     let uniforms = Uniforms {
         model: matrices.0,
         proj: matrices.1,
@@ -82,7 +78,6 @@ fn main() {
     }
 
     vertex_shader_pass(&mut tris, &uniforms, dims);
-    // let occ = if uniforms.render_shadows { get_occlusions(&tris) } else { Vec::new() };
 
     if show_progress {
         println!("Done!");
@@ -111,11 +106,11 @@ fn main() {
 
             let tris = &tris;
             let uniforms = &uniforms;
-            // let occ = &occ;
             spawner.spawn(move || {
                 let mut pixels_shaded = 0;
                 for (j, tri) in tris.iter().enumerate() {
-                    if j % (tri_count / 100) == 0 && show_progress {
+                    // + 1 to prevent mod 0
+                    if j % ((tri_count / 100) + 1) == 0 && show_progress {
                         println!(
                             "{:.2}% complete ({}/{} triangles rendered, {} pixels shaded) on thread {}",
                             (j as f64 / tri_count as f64) * 100.0,
@@ -339,27 +334,6 @@ impl Point2d {
     }
 }
 
-// fn get_occlusions<'a, 'b>(tris: &'a Vec<Triangle<'b>>) -> Vec<Vec<&'a Triangle<'b>>> {
-//     let mut occ = Vec::new();
-
-//     for tri in tris.iter() {
-//         let mut current_tri_occ = Vec::new();
-
-//         let arr = [&tri.a.pos_world, &tri.b.pos_world, &tri.c.pos_world];
-//         for tri in tris.iter() {
-
-
-
-//             current_tri_occ.push(tri);
-//         }
-
-
-//         occ.push(current_tri_occ);
-//     }
-
-//     occ
-// }
-
 fn vertex_shader_pass(tris: &mut Vec<Triangle>, u: &Uniforms, dims: (u32, u32)) {
     for tri in tris.iter_mut() {
         if vertex_shader(tri, u, dims) == VertexShaderResult::Clipped {
@@ -378,9 +352,9 @@ fn rasterize(buf: &mut SubBuffer, tri: &Triangle, occ: &[Triangle], u: &Uniforms
         color_r: plane_from_points_z(a, b, c, tri.a.color[0] as f64, tri.b.color[0] as f64, tri.c.color[0] as f64),
         color_g: plane_from_points_z(a, b, c, tri.a.color[1] as f64, tri.b.color[1] as f64, tri.c.color[1] as f64),
         color_b: plane_from_points_z(a, b, c, tri.a.color[2] as f64, tri.b.color[2] as f64, tri.c.color[2] as f64),
-        n_x: plane_from_points_z(a, b, c, tri.a.n.x, tri.b.n.x, tri.c.n.x),
-        n_y: plane_from_points_z(a, b, c, tri.a.n.y, tri.b.n.y, tri.c.n.y),
-        n_z: plane_from_points_z(a, b, c, tri.a.n.z, tri.b.n.z, tri.c.n.z),
+        n_x: plane_from_points_z(a_world, b_world, c_world, tri.a.n.x, tri.b.n.x, tri.c.n.x),
+        n_y: plane_from_points_z(a_world, b_world, c_world, tri.a.n.y, tri.b.n.y, tri.c.n.y),
+        n_z: plane_from_points_z(a_world, b_world, c_world, tri.a.n.z, tri.b.n.z, tri.c.n.z),
         tex_x: plane_from_points_z(a_world, b_world, c_world, tri.a.tex[0], tri.b.tex[0], tri.c.tex[0]),
         tex_y: plane_from_points_z(a_world, b_world, c_world, tri.a.tex[1], tri.b.tex[1], tri.c.tex[1]),
         pos_x: plane_from_points_z(a, b, c, tri.a.pos_clip.x, tri.b.pos_clip.x, tri.c.pos_clip.x),
@@ -438,6 +412,11 @@ fn rasterize(buf: &mut SubBuffer, tri: &Triangle, occ: &[Triangle], u: &Uniforms
 
     fn top_scanline(tri: &Triangle, y: u32) -> (f64, f64) {
         let (a, b, c) = (&tri.a.pos.into_2d(), &tri.b.pos.into_2d(), &tri.c.pos.into_2d());
+        // if tri has a flat top side, we don't have a top half of the tri
+        if a.y == b.y {
+            return (0.0, 0.0);
+        }
+
         let ab = a.x == b.x;
         let ac = a.x == c.x;
         if !ab && !ac {
@@ -464,6 +443,11 @@ fn rasterize(buf: &mut SubBuffer, tri: &Triangle, occ: &[Triangle], u: &Uniforms
 
     fn bottom_scanline(tri: &Triangle, y: u32) -> (f64, f64) {
         let (a, b, c) = (&tri.a.pos.into_2d(), &tri.b.pos.into_2d(), &tri.c.pos.into_2d());
+        // if tri has a flat bottom side, we don't have a bottom half of the tri
+        if b.y == c.y {
+            return (0.0, 0.0);
+        }
+
         let cb = c.x == b.x;
         let ca = c.x == a.x;
         if !cb && !ca {
@@ -557,12 +541,6 @@ fn pixel_shader(tri: &Triangle, occ: &[Triangle], u: &Uniforms, planes: &Attribu
     let (x, y) = (x as f64, y as f64);
 
     if INTERPOLATE_FAST {
-        let norm = Vec3f::new(
-            lerp_fast(&planes.n_x, x, y),
-            lerp_fast(&planes.n_y, x, y),
-            lerp_fast(&planes.n_z, x, y),
-        );
-
         let pix_clip_pos = Point3d::new(
             lerp_fast(&planes.pos_x, x, y),
             lerp_fast(&planes.pos_y, x, y),
@@ -570,11 +548,17 @@ fn pixel_shader(tri: &Triangle, occ: &[Triangle], u: &Uniforms, planes: &Attribu
         );
 
         let pix_world_pos = math::mul_point_matrix(&pix_clip_pos, &u.inv_proj);
+        let (x_world, y_world) = (pix_world_pos.x, pix_world_pos.y);
+
+        let norm = Vec3f::new(
+            lerp_fast(&planes.n_x, x_world, y_world),
+            lerp_fast(&planes.n_y, x_world, y_world),
+            lerp_fast(&planes.n_z, x_world, y_world),
+        );
 
         let base_color = if let Some(tex) = tri.tex {
             // we calculate texture coords with respect to our pixel's world space position rather than it's clip or raster space position
-            // because otherwise we get incorrect results.
-            let (x_world, y_world) = (pix_world_pos.x, pix_world_pos.y);
+            // because otherwise we get incorrect results. we do the same with some other attributes too.
             let vt_x = lerp_fast(&planes.tex_x, x_world, y_world);
             let vt_y = lerp_fast(&planes.tex_y, x_world, y_world);
             tex_sample(tex, vt_x, vt_y)
