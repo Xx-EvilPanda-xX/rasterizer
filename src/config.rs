@@ -3,7 +3,7 @@ use std::{str::FromStr, collections::HashMap};
 use core::fmt::Debug;
 use image::RgbaImage;
 
-use super::{Point3d, Triangle, Vertex, math::Vec3f};
+use super::{Point3d, Triangle, Vertex, math::Vec3f, MtlData};
 
 pub struct Config<'a> {
     pub width: u32,
@@ -32,7 +32,7 @@ pub struct Config<'a> {
 }
 
 impl<'a> Config<'a> {
-    pub fn new(text: &str, obj: &Option<(String, String)>, textures: &'a HashMap<String, RgbaImage>) -> Self {
+    pub fn new(text: &str, obj: &Option<(String, String)>, textures: &'a HashMap<String, MtlData>) -> Self {
         let mut config = String::new();
         for line in text.lines() {
             if line.starts_with("//") {
@@ -258,11 +258,11 @@ fn field<'a>(name: &str, args: &mut &'a str) -> Result<&'a str, FieldError> {
     Ok(f)
 }
 
-fn load_obj<'a>(obj: &str, color_freq: f64, shade_mode: i32, textures: &'a HashMap<String, RgbaImage>) -> Vec<Triangle<'a>> {
+fn load_obj<'a>(obj: &str, color_freq: f64, shade_mode: i32, mtls: &'a HashMap<String, MtlData>) -> Vec<Triangle<'a>> {
     // vertex data
     let mut vertices = Vec::new();
     // indices into vertex data
-    let mut v_indices: Vec<[u32; 3]> = Vec::new();
+    let mut v_indices: Vec<([u32; 3], Option<[u8; 3]>)> = Vec::new();
     // normal data
     let mut normals = Vec::new();
     // indices into normal data
@@ -271,7 +271,9 @@ fn load_obj<'a>(obj: &str, color_freq: f64, shade_mode: i32, textures: &'a HashM
     let mut tex_coords = Vec::new();
     // indices into texture coordinates and corresponding texture
     let mut vt_indices: Vec<([u32; 3], Option<&'a RgbaImage>)> = Vec::new();
+
     let mut current_tex = None;
+    let mut current_mtl_color = None;
 
     for line in obj.lines() {
         if line.starts_with("v ") {
@@ -303,23 +305,27 @@ fn load_obj<'a>(obj: &str, color_freq: f64, shade_mode: i32, textures: &'a HashM
             let mut vt = ([0; 3], false);
             let mut vn = ([0; 3], false);
 
-            for (i, &s) in idx.iter().enumerate() {
-                let mut s = s.split('/');
+            for (i, &string) in idx.iter().enumerate() {
+                let mut s = string.split('/');
 
-                v[i] = s.next().unwrap().parse::<u32>().unwrap() - 1;
+                v[i] = s.next().unwrap().parse::<u32>().expect("Failed to parse vertex position index") - 1;
 
                 if let Some(s) = s.next() {
-                    vt.0[i] = s.parse::<u32>().unwrap() - 1;
-                    vt.1 = true;
+                    if let Ok(vt_index) = s.parse::<u32>() {
+                        vt.0[i] = vt_index - 1;
+                        vt.1 = true;
+                    }
                 }
 
                 if let Some(s) = s.next() {
-                    vn.0[i] = s.parse::<u32>().unwrap() - 1;
-                    vn.1 = true;
+                    if let Ok(vn_index) = s.parse::<u32>() {
+                        vn.0[i] = vn_index - 1;
+                        vn.1 = true;
+                    }
                 }
             }
 
-            v_indices.push(v);
+            v_indices.push((v, current_mtl_color));
 
             if vt.1 {
                 vt_indices.push((vt.0, current_tex));
@@ -330,21 +336,19 @@ fn load_obj<'a>(obj: &str, color_freq: f64, shade_mode: i32, textures: &'a HashM
             }
         } else if line.starts_with("usemtl ") {
             let k = line.strip_prefix("usemtl ").unwrap().trim();
-            current_tex = textures.get(k);
+            if let Some(mtl) = mtls.get(k) {
+                current_tex = mtl.tex.as_ref();
+                current_mtl_color = Some(mtl.color);
+            } else {
+                current_tex = None;
+                current_mtl_color = None;
+            }
         }
-    }
-
-    if !vt_indices.is_empty() {
-        assert_eq!(v_indices.len(), vt_indices.len());
-    }
-
-    if !vn_indices.is_empty() {
-        assert_eq!(v_indices.len(), vn_indices.len());
     }
 
     let mut triangles = Vec::new();
 
-    for tri in v_indices.iter() {
+    for (tri, color) in v_indices.iter() {
         let a = vertices[tri[0] as usize];
         let b = vertices[tri[1] as usize];
         let c = vertices[tri[2] as usize];
@@ -401,7 +405,7 @@ fn load_obj<'a>(obj: &str, color_freq: f64, shade_mode: i32, textures: &'a HashM
                 pos: a,
                 pos_world: Point3d::origin(),
                 pos_clip: Point3d::origin(),
-                color: color_a,
+                color: color.unwrap_or(color_a),
                 n,
                 tex: [0.0, 0.0]
             },
@@ -409,7 +413,7 @@ fn load_obj<'a>(obj: &str, color_freq: f64, shade_mode: i32, textures: &'a HashM
                 pos: b,
                 pos_world: Point3d::origin(),
                 pos_clip: Point3d::origin(),
-                color: color_b,
+                color: color.unwrap_or(color_b),
                 n,
                 tex: [0.0, 0.0]
             },
@@ -417,7 +421,7 @@ fn load_obj<'a>(obj: &str, color_freq: f64, shade_mode: i32, textures: &'a HashM
                 pos: c,
                 pos_world: Point3d::origin(),
                 pos_clip: Point3d::origin(),
-                color: color_c,
+                color: color.unwrap_or(color_c),
                 n,
                 tex: [0.0, 0.0],
             },

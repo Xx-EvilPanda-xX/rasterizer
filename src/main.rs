@@ -40,11 +40,11 @@ fn main() {
         None
     };
 
-    let textures = load_textures(&obj);
-    let config = Config::new(&config_str, &obj, &textures);
+    let mtls = load_textures(&obj);
+    let config = Config::new(&config_str, &obj, &mtls);
 
     if config.render_shadows {
-        println!("WARNING: Shadow rendering is incredibly slow and time to render will increase with the sqaure of the triangle count. (recommendation: do not exceed 10000 tris)");
+        println!("WARNING: Shadow rendering is incredibly slow and time to render will increase with the sqaure of the triangle count. (recommendation: do not exceed 10000 tris at 4k res)");
     }
 
     let mut buf = Buffer {
@@ -150,32 +150,63 @@ fn get_config(name: &str) -> String {
     config
 }
 
-fn load_textures(obj: &Option<(String, String)>) -> HashMap<String, RgbaImage> {
-    let mut textures = HashMap::new();
+pub struct MtlData {
+    color: [u8; 3],
+    tex: Option<RgbaImage>,
+}
+
+fn load_textures(obj: &Option<(String, String)>) -> HashMap<String, MtlData> {
+    let mut mtls = HashMap::new();
 
     if let Some(obj) = obj {
-        for mat in obj.1.split("newmtl ") {
-            if let Ok((key, tex)) = get_tex(mat) {
-                textures.insert(key, tex);
+        for mat in obj.1.split("newmtl ").skip(1) {
+            if let Some(name) = get_name(mat) {
+                let color = get_color(mat).expect("mtl is missing diffuse color");
+                let tex = get_tex(mat);
+                mtls.insert(name, MtlData { color, tex });
             }
         }
     }
 
-    textures
+    mtls
 }
 
-static MAP: &'static str = "map_Kd";
+fn get_name(mat: &str) -> Option<String> {
+    Some(mat.split_at(mat.find('\n')?).0.trim().to_string())
+}
 
-fn get_tex(mat: &str) -> Result<(String, RgbaImage), ()> {
-    let key = mat.split_at(mat.find('\n').ok_or(())?).0.trim();
-    let path = mat.split_at(mat.find(MAP).ok_or(())? + MAP.len() + 1).1;
-    let path = path.split_at(path.find("\n").unwrap_or(path.len())).0.trim();
-    let mut tex = image::load(
-        BufReader::new(File::open(path).expect(&format!("Failed to open texture at {}", path))),
-        image::ImageFormat::from_path(path).expect(&format!("No such image type at {}", path))
-    ).expect(&format!("Failed to load texture at {}", path)).into_rgba8();
-    image::imageops::flip_vertical_in_place(&mut tex);
-    Ok((key.to_owned(), tex))
+fn get_color(mat: &str) -> Option<[u8; 3]> {
+    for line in mat.lines() {
+        if line.starts_with("Kd") {
+            let color_str = line.split_at(line.find(' ').unwrap() + 1).1;
+            let mut color_iter = color_str.split(' ');
+
+            let mut color = [0; 3];
+            color[0] = (color_iter.next().expect("Not enough channels in mtl color").parse::<f64>().expect("Failed to parse mtl color red") * 255.0) as u8;
+            color[1] = (color_iter.next().expect("Not enough channels in mtl color").parse::<f64>().expect("Failed to parse mtl color green") * 255.0) as u8;
+            color[2] = (color_iter.next().expect("Not enough channels in mtl color").parse::<f64>().expect("Failed to parse mtl color blue") * 255.0) as u8;
+
+            return Some(color);
+        }
+    }
+
+    None
+}
+
+fn get_tex(mat: &str) -> Option<RgbaImage> {
+    for line in mat.lines() {
+        if line.starts_with("map_Kd") {
+            let path = line.split_at(line.find(' ').unwrap() + 1).1;
+            let mut tex = image::load(
+                BufReader::new(File::open(path).expect(&format!("Failed to open texture at {}", path))),
+                image::ImageFormat::from_path(path).expect(&format!("No such image type at {}", path))
+            ).expect(&format!("Failed to load texture at {}", path)).into_rgba8();
+            image::imageops::flip_vertical_in_place(&mut tex);
+            return Some(tex);
+        }
+    }
+
+    None
 }
 
 fn get_matrices(config: &Config) -> (Mat4f, Mat4f) {
@@ -653,31 +684,25 @@ fn point_in_tri(p: &Point3d, tri: [&Point3d; 3]) -> bool {
 
     let ap = (p.into_vec() - a).normalize();
     let bp = (p.into_vec() - b).normalize();
-    let cp = (p.into_vec() - c).normalize();
 
     // all direction vecs of our tri
     let ab = (b - a).normalize();
     let ba = (a - b).normalize();
     let ac = (c - a).normalize();
-    let ca = (a - c).normalize();
     let bc = (c - b).normalize();
-    let cb = (b - c).normalize();
 
     // angle at point a and point b on our tri
     let theta_a = Vec3f::dot(&ab, &ac);
     let theta_b = Vec3f::dot(&ba, &bc);
-    let theta_c = Vec3f::dot(&ca, &cb);
 
     // angles between our point of intersection and the sides of our tri
     let theta_iab = Vec3f::dot(&ap, &ab);
     let theta_iac = Vec3f::dot(&ap, &ac);
     let theta_iba = Vec3f::dot(&bp, &ba);
     let theta_ibc = Vec3f::dot(&bp, &bc);
-    let theta_ica = Vec3f::dot(&cp, &ca);
-    let theta_icb = Vec3f::dot(&cp, &cb);
 
     // we invert the comparison becuase cos is, in some sense, proportional to the negative of the angle
-    (theta_iab > theta_a && theta_iac > theta_a) && (theta_iba > theta_b && theta_ibc > theta_b) && (theta_ica > theta_c && theta_icb > theta_c)
+    (theta_iab > theta_a && theta_iac > theta_a) && (theta_iba > theta_b && theta_ibc > theta_b)
 }
 
 fn solve_line_plane(l: &Line3d, p: &Plane) -> Point3d {

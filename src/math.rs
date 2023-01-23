@@ -123,19 +123,12 @@ impl Mat4f {
     pub fn inverse(&self) -> Self {
         let mut aug_mat = [[0.0; 8]; 4];
 
+        // augment an identity matrix onto the end of the matrix
         for i in 0..4 {
             for j in 0..4 {
                 aug_mat[i][j] = self[i][j];
             }
             aug_mat[i][i + 4] = 1.0;
-        }
-
-        for i in (1..4).rev() {
-            if aug_mat[i - 1][0] < aug_mat[i][0] {
-                let tmp = aug_mat[i - 1];
-                aug_mat[i - 1] = aug_mat[i];
-                aug_mat[i] = tmp;
-            }
         }
 
         for i in 0..4 {
