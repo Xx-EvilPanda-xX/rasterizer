@@ -270,7 +270,7 @@ pub struct Point2d {
 
 // if undefined slope, m = x intercept and b = infinity
 #[derive(Clone, Copy, Debug)]
-struct Line {
+struct Line2d {
     m: f64,
     b: f64,
 }
@@ -553,31 +553,38 @@ fn vertex_shader(tri: &mut Triangle, u: &Uniforms, dims: (u32, u32)) -> VertexSh
 }
 
 const FULLY_OPAQUE: u8 = 255;
-// Setting this to false is deprecated. It will result in inaccurate texture sampling.
 const INTERPOLATE_FAST: bool = true;
 const MU: f64 = 0.0000001;
 
 /*
-interpolate_fast treats our attributes as the z values of our
+Interpolate_fast treats our attributes as the z values of our
 triangles, then solves for z when x and y are known at any
 arbitrary point in that plane.
 
-interpolate_slow finds the maximum distance away from a vertex
+Interpolate_slow finds the maximum distance away from a vertex
 that a point on our triangle can be, as well as the actual distance.
 From there, it can produce a "weight" for each vertex, to be
 multiplied with our attributes.
+
+An interesting thing to note is that if a 2 or more verts of a tri have perfectly equal x and y values in world space,
+interpolation won't actually work. This is because any interpolation plane created with this triangle
+in mind will have an undefined slope. Therefore, trying to solve for a z value on this plane from
+a know x and y will result in a `NaN` or `inf`. The only way to solve this would be to do interpolation in 4
+dimensions and solve for w from a know x, y, and z, which im definetly not gonna do.
 */
 
 fn pixel_shader(tri: &Triangle, occ: &[Triangle], u: &Uniforms, planes: &AttributePlanes, x: u32, y: u32) -> [u8; 4] {
     let (x, y) = (x as f64, y as f64);
 
     if INTERPOLATE_FAST {
+        // position of our pixel in clip space
         let pix_clip_pos = Point3d::new(
             lerp_fast(&planes.pos_x, x, y),
             lerp_fast(&planes.pos_y, x, y),
             lerp_fast(&planes.pos_z, x, y),
         );
 
+        // position of our pixel in world space
         let pix_world_pos = math::mul_point_matrix(&pix_clip_pos, &u.inv_proj);
         let (x_world, y_world) = (pix_world_pos.x, pix_world_pos.y);
 
@@ -603,35 +610,34 @@ fn pixel_shader(tri: &Triangle, occ: &[Triangle], u: &Uniforms, planes: &Attribu
         let color = mul_color(&base_color, calc_lighting(&norm, &pix_world_pos, u, occ));
         color
     } else {
-        let weights = lerp_slow(tri, x, y);
+        let weights_clip = lerp_slow([&tri.a.pos, &tri.b.pos, &tri.c.pos], x, y);
+        let pix_clip_pos = Point3d::new(
+            tri.a.pos_clip.x * weights_clip.a + tri.b.pos_clip.x * weights_clip.b + tri.c.pos_clip.x * weights_clip.c,
+            tri.a.pos_clip.y * weights_clip.a + tri.b.pos_clip.y * weights_clip.b + tri.c.pos_clip.y * weights_clip.c,
+            tri.a.pos_clip.z * weights_clip.a + tri.b.pos_clip.z * weights_clip.b + tri.c.pos_clip.z * weights_clip.c,
+        );
+        let pix_world_pos = math::mul_point_matrix(&pix_clip_pos, &u.inv_proj);
+        let weights_world = lerp_slow([&tri.a.pos_world, &tri.b.pos_world, &tri.c.pos_world], pix_world_pos.x, pix_world_pos.y);
 
         let base_color = if let Some(tex) = tri.tex {
-            let vt_x = tri.a.tex[0] * weights.a + tri.b.tex[0] * weights.b + tri.c.tex[0] * weights.c;
-            let vt_y = tri.a.tex[1] * weights.a + tri.b.tex[1] * weights.b + tri.c.tex[1] * weights.c;
+            let vt_x = tri.a.tex[0] * weights_world.a + tri.b.tex[0] * weights_world.b + tri.c.tex[0] * weights_world.c;
+            let vt_y = tri.a.tex[1] * weights_world.a + tri.b.tex[1] * weights_world.b + tri.c.tex[1] * weights_world.c;
             tex_sample(tex, vt_x, vt_y)
         } else {
             let a = [tri.a.color[0] as f64, tri.a.color[1] as f64, tri.a.color[2] as f64];
             let b = [tri.b.color[0] as f64, tri.b.color[1] as f64, tri.b.color[2] as f64];
             let c = [tri.c.color[0] as f64, tri.c.color[1] as f64, tri.c.color[2] as f64];
-            [(a[0] * weights.a + b[0] * weights.b + c[0] * weights.c).round() as u8,
-            (a[1] * weights.a + b[1] * weights.b + c[1] * weights.c).round() as u8,
-            (a[2] * weights.a + b[2] * weights.b + c[2] * weights.c).round() as u8,
+            [(a[0] * weights_clip.a + b[0] * weights_clip.b + c[0] * weights_clip.c).round() as u8,
+            (a[1] * weights_clip.a + b[1] * weights_clip.b + c[1] * weights_clip.c).round() as u8,
+            (a[2] * weights_clip.a + b[2] * weights_clip.b + c[2] * weights_clip.c).round() as u8,
             FULLY_OPAQUE]
         };
 
         let norm = Vec3f::new(
-            tri.a.n.x * weights.a + tri.b.n.x * weights.b + tri.c.n.x * weights.c,
-            tri.a.n.y * weights.a + tri.b.n.y * weights.b + tri.c.n.y * weights.c,
-            tri.a.n.z * weights.a + tri.b.n.z * weights.b + tri.c.n.z * weights.c,
+            tri.a.n.x * weights_world.a + tri.b.n.x * weights_world.b + tri.c.n.x * weights_world.c,
+            tri.a.n.y * weights_world.a + tri.b.n.y * weights_world.b + tri.c.n.y * weights_world.c,
+            tri.a.n.z * weights_world.a + tri.b.n.z * weights_world.b + tri.c.n.z * weights_world.c,
         );
-
-        let pix_clip_pos = Point3d::new(
-            tri.a.pos_clip.x * weights.a + tri.b.pos_clip.x * weights.b + tri.c.pos_clip.x * weights.c,
-            tri.a.pos_clip.y * weights.a + tri.b.pos_clip.y * weights.b + tri.c.pos_clip.y * weights.c,
-            tri.a.pos_clip.z * weights.a + tri.b.pos_clip.z * weights.b + tri.c.pos_clip.z * weights.c,
-        );
-
-        let pix_world_pos = math::mul_point_matrix(&pix_clip_pos, &u.inv_proj);
 
         let color = mul_color(&base_color, calc_lighting(&norm, &pix_world_pos, u, occ));
         color
@@ -766,9 +772,9 @@ struct VertexWeights {
     c: f64,
 }
 
-// returns vertex weights (only in clip space which doesn't allow proper texture sampling)
-fn lerp_slow(tri: &Triangle, x: f64, y: f64) -> VertexWeights {
-    let (a, b, c) = (&tri.a.pos.into_2d(), &tri.b.pos.into_2d(), &tri.c.pos.into_2d());
+// calculates a "weight" for each vertex in our tri by comparing the distances between the vertices and our point
+fn lerp_slow(tri: [&Point3d; 3], x: f64, y: f64) -> VertexWeights {
+    let (a, b, c) = (&tri[0].into_2d(), &tri[1].into_2d(), &tri[2].into_2d());
     let p = Point2d::new(x, y);
 
     // sides of our triangle
@@ -818,18 +824,18 @@ fn dist_3d(a: &Point3d, b: &Point3d) -> f64 {
 }
 
 // find m and b from two points
-fn line_2d_from_points(p1: &Point2d, p2: &Point2d) -> Line {
+fn line_2d_from_points(p1: &Point2d, p2: &Point2d) -> Line2d {
     let dy = p1.y - p2.y;
     let dx = p1.x - p2.x;
 
     if dx == 0.0 {
-        return Line { m: p1.x, b: f64::INFINITY };
+        return Line2d { m: p1.x, b: f64::INFINITY };
     }
 
     let m = dy / dx;
     let b = p1.y - dy * p1.x / dx;
 
-    Line { m, b }
+    Line2d { m, b }
 }
 
 fn line_3d_from_points(p1: &Point3d, p2: &Point3d) -> Line3d {
@@ -875,7 +881,7 @@ fn plane_from_points(p1: &Point3d, p2: &Point3d, p3: &Point3d) -> Plane {
 }
 
 // find the point of intersection of two lines
-fn solve_lines(l1: &Line, l2: &Line) -> Point2d {
+fn solve_lines(l1: &Line2d, l2: &Line2d) -> Point2d {
     // account for lines that are edge cases to the below formula
     if l1.b.is_infinite() {
         return Point2d::new(l1.m, solve_y(l2, l1.m));
@@ -895,11 +901,11 @@ fn solve_lines(l1: &Line, l2: &Line) -> Point2d {
     Point2d::new(x, y)
 }
 
-fn solve_x(l: &Line, y: f64) -> f64 {
+fn solve_x(l: &Line2d, y: f64) -> f64 {
     (y - l.b) / l.m
 }
 
-fn solve_y(l: &Line, x: f64) -> f64 {
+fn solve_y(l: &Line2d, x: f64) -> f64 {
     l.m * x + l.b
 }
 
