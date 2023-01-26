@@ -3,7 +3,9 @@ use std::{str::FromStr, collections::HashMap};
 use core::fmt::Debug;
 use image::RgbaImage;
 
-use super::{Point3d, Triangle, Vertex, math::Vec3f, MtlData};
+use crate::MtlData;
+use crate::renderer::{Triangle, Vertex};
+use crate::math::{Point3d, Vec3f};
 
 pub struct Config<'a> {
     pub width: u32,
@@ -244,7 +246,7 @@ fn field<'a>(name: &str, args: &mut &'a str) -> Result<&'a str, FieldError> {
     *args = if let Some(new_args) = args.strip_prefix(&format!("{}=", name)) {
         new_args
     } else {
-        return Err(FieldError::Missing(format!("{}", name)));
+        return Err(FieldError::Missing(name.to_string()));
     };
 
     let newline = if let Some(newline) = args.find('\n') {
@@ -265,12 +267,12 @@ fn load_obj<'a>(obj: &str, color_freq: f64, shade_mode: i32, mtls: &'a HashMap<S
     let mut v_indices: Vec<([u32; 3], Option<[u8; 3]>)> = Vec::new();
     // normal data
     let mut normals = Vec::new();
-    // indices into normal data
-    let mut vn_indices: Vec<[u32; 3]> = Vec::new();
+    // indices into normal data and the index of the triangle it belongs to
+    let mut vn_indices: Vec<([u32; 3], usize)> = Vec::new();
     // texture coordinates
     let mut tex_coords = Vec::new();
-    // indices into texture coordinates and corresponding texture
-    let mut vt_indices: Vec<([u32; 3], Option<&'a RgbaImage>)> = Vec::new();
+    // indices into texture coordinates and corresponding texture and the index of the triangle it belongs to
+    let mut vt_indices: Vec<([u32; 3], Option<&'a RgbaImage>, usize)> = Vec::new();
 
     let mut current_tex = None;
     let mut current_mtl_color = None;
@@ -325,14 +327,16 @@ fn load_obj<'a>(obj: &str, color_freq: f64, shade_mode: i32, mtls: &'a HashMap<S
                 }
             }
 
+            // every trianlge MUST have a position attrib
             v_indices.push((v, current_mtl_color));
 
+            // but not a tex or norm attrib
             if vt.1 {
-                vt_indices.push((vt.0, current_tex));
+                vt_indices.push((vt.0, current_tex, v_indices.len() - 1));
             }
 
             if vn.1 {
-                vn_indices.push(vn.0);
+                vn_indices.push((vn.0, v_indices.len() - 1));
             }
         } else if line.starts_with("usemtl ") {
             let k = line.strip_prefix("usemtl ").unwrap().trim();
@@ -353,49 +357,7 @@ fn load_obj<'a>(obj: &str, color_freq: f64, shade_mode: i32, mtls: &'a HashMap<S
         let b = vertices[tri[1] as usize];
         let c = vertices[tri[2] as usize];
 
-        let color_a;
-        let color_b;
-        let color_c;
-
-        match shade_mode {
-            0 => {
-                let ra = (((a.x * color_freq).sin() + 1.0) * 128.0) as u8;
-                let ga = (((a.y * color_freq).sin() + 1.0) * 128.0) as u8;
-                let ba = (((a.z * color_freq).sin() + 1.0) * 128.0) as u8;
-                color_a = [ra, ga, ba];
-                color_b = [ra, ga, ba];
-                color_c = [ra, ga, ba];
-            }
-            1 => {
-                let ra = (((a.x * color_freq).sin() + 1.0) * 128.0) as u8;
-                let ga = (((a.y * color_freq).sin() + 1.0) * 128.0) as u8;
-                let ba = (((a.z * color_freq).sin() + 1.0) * 128.0) as u8;
-                let rb = (((b.x * color_freq).sin() + 1.0) * 128.0) as u8;
-                let gb = (((b.y * color_freq).sin() + 1.0) * 128.0) as u8;
-                let bb = (((b.z * color_freq).sin() + 1.0) * 128.0) as u8;
-                let rc = (((c.x * color_freq).sin() + 1.0) * 128.0) as u8;
-                let gc = (((c.y * color_freq).sin() + 1.0) * 128.0) as u8;
-                let bc = (((c.z * color_freq).sin() + 1.0) * 128.0) as u8;
-                color_a = [ra, ga, ba];
-                color_b = [rb, gb, bb];
-                color_c = [rc, gc, bc];
-            }
-            2 => {
-                let ra = (((a.x * color_freq).sin() + 1.0) * 128.0) as u8;
-                let ga = (((a.y * color_freq).cos() + 1.0) * 128.0) as u8;
-                let ba = (((a.z * color_freq).sin() + 1.0) * 128.0) as u8;
-                let rb = (((b.x * color_freq).cos() + 1.0) * 128.0) as u8;
-                let gb = (((b.y * color_freq).sin() + 1.0) * 128.0) as u8;
-                let bb = (((b.z * color_freq).cos() + 1.0) * 128.0) as u8;
-                let rc = (((c.x * color_freq).sin() + 1.0) * 128.0) as u8;
-                let gc = (((c.y * color_freq).cos() + 1.0) * 128.0) as u8;
-                let bc = (((c.z * color_freq).sin() + 1.0) * 128.0) as u8;
-                color_a = [ra, ga, ba];
-                color_b = [rb, gb, bb];
-                color_c = [rc, gc, bc];
-            }
-            _ => panic!("invalid shading mode")
-        }
+        let (color_a, color_b, color_c) = get_color(shade_mode, &a, &b, &c, color_freq);
 
         let ab = Vec3f::new(b.x, b.y, b.z) - Vec3f::new(a.x, a.y, a.z);
         let ac = Vec3f::new(c.x, c.y, c.z) - Vec3f::new(a.x, a.y, a.z);
@@ -406,6 +368,7 @@ fn load_obj<'a>(obj: &str, color_freq: f64, shade_mode: i32, mtls: &'a HashMap<S
                 pos_world: Point3d::origin(),
                 pos_clip: Point3d::origin(),
                 color: color.unwrap_or(color_a),
+                // both of these may or not be initialized with a different value in the below loops
                 n,
                 tex: [0.0, 0.0]
             },
@@ -430,18 +393,18 @@ fn load_obj<'a>(obj: &str, color_freq: f64, shade_mode: i32, mtls: &'a HashMap<S
         });
     }
 
-    for (i, tri) in vt_indices.iter().enumerate() {
-        let tex_a = tex_coords[tri.0[0] as usize];
-        let tex_b = tex_coords[tri.0[1] as usize];
-        let tex_c = tex_coords[tri.0[2] as usize];
+    for &(tri, tex, i) in vt_indices.iter() {
+        let tex_a = tex_coords[tri[0] as usize];
+        let tex_b = tex_coords[tri[1] as usize];
+        let tex_c = tex_coords[tri[2] as usize];
 
         triangles[i].a.tex = tex_a;
         triangles[i].b.tex = tex_b;
         triangles[i].c.tex = tex_c;
-        triangles[i].tex = tri.1;
+        triangles[i].tex = tex;
     }
 
-    for (i, tri) in vn_indices.iter().enumerate() {
+    for &(tri, i) in vn_indices.iter() {
         let n_a = normals[tri[0] as usize];
         let n_b = normals[tri[1] as usize];
         let n_c = normals[tri[2] as usize];
@@ -452,4 +415,52 @@ fn load_obj<'a>(obj: &str, color_freq: f64, shade_mode: i32, mtls: &'a HashMap<S
     }
 
     triangles
+}
+
+fn get_color(shade_mode: i32, a: &Point3d, b: &Point3d, c: &Point3d, color_freq: f64) -> ([u8; 3], [u8; 3], [u8; 3]) {
+    let color_a;
+    let color_b;
+    let color_c;
+
+    match shade_mode {
+        0 => {
+            let ra = (((a.x * color_freq).sin() + 1.0) * 128.0) as u8;
+            let ga = (((a.y * color_freq).sin() + 1.0) * 128.0) as u8;
+            let ba = (((a.z * color_freq).sin() + 1.0) * 128.0) as u8;
+            color_a = [ra, ga, ba];
+            color_b = [ra, ga, ba];
+            color_c = [ra, ga, ba];
+        }
+        1 => {
+            let ra = (((a.x * color_freq).sin() + 1.0) * 128.0) as u8;
+            let ga = (((a.y * color_freq).sin() + 1.0) * 128.0) as u8;
+            let ba = (((a.z * color_freq).sin() + 1.0) * 128.0) as u8;
+            let rb = (((b.x * color_freq).sin() + 1.0) * 128.0) as u8;
+            let gb = (((b.y * color_freq).sin() + 1.0) * 128.0) as u8;
+            let bb = (((b.z * color_freq).sin() + 1.0) * 128.0) as u8;
+            let rc = (((c.x * color_freq).sin() + 1.0) * 128.0) as u8;
+            let gc = (((c.y * color_freq).sin() + 1.0) * 128.0) as u8;
+            let bc = (((c.z * color_freq).sin() + 1.0) * 128.0) as u8;
+            color_a = [ra, ga, ba];
+            color_b = [rb, gb, bb];
+            color_c = [rc, gc, bc];
+        }
+        2 => {
+            let ra = (((a.x * color_freq).sin() + 1.0) * 128.0) as u8;
+            let ga = (((a.y * color_freq).cos() + 1.0) * 128.0) as u8;
+            let ba = (((a.z * color_freq).sin() + 1.0) * 128.0) as u8;
+            let rb = (((b.x * color_freq).cos() + 1.0) * 128.0) as u8;
+            let gb = (((b.y * color_freq).sin() + 1.0) * 128.0) as u8;
+            let bb = (((b.z * color_freq).cos() + 1.0) * 128.0) as u8;
+            let rc = (((c.x * color_freq).sin() + 1.0) * 128.0) as u8;
+            let gc = (((c.y * color_freq).cos() + 1.0) * 128.0) as u8;
+            let bc = (((c.z * color_freq).sin() + 1.0) * 128.0) as u8;
+            color_a = [ra, ga, ba];
+            color_b = [rb, gb, bb];
+            color_c = [rc, gc, bc];
+        }
+        _ => panic!("invalid shading mode")
+    }
+
+    (color_a, color_b, color_c)
 }
