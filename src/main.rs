@@ -260,5 +260,11 @@ fn vertex_shader_pass(tris: &mut [renderer::Triangle], u: &renderer::Uniforms, d
     for tri in tris.iter_mut() {
         renderer::vertex_shader(tri, u, dims);
         renderer::sort_tri_points_y(tri);
+
+        let (a, b, c) = (tri.a.pos_world.into_vec(), tri.b.pos_world.into_vec(), tri.c.pos_world.into_vec());
+        tri.ab = (b - a).normalize();
+        tri.ba = (a - b).normalize();
+        tri.ac = (c - a).normalize();
+        tri.bc = (c - b).normalize();
     }
 }

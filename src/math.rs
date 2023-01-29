@@ -4,17 +4,11 @@ use std::ops::{Index, IndexMut, Sub, Add};
 const MU: f64 = 0.0000001;
 
 // `p` is assumed to lie on the same plane as `tri`
-pub fn point_in_tri(p: &Point3d, tri: [&Point3d; 3]) -> bool {
-    let (a, b, c) = (tri[0].into_vec(), tri[1].into_vec(), tri[2].into_vec());
+pub fn point_in_tri(p: &Point3d, tri: [&Point3d; 3], ab: &Vec3f, ba: &Vec3f, ac: &Vec3f, bc: &Vec3f) -> bool {
+    let (a, b) = (tri[0].into_vec(), tri[1].into_vec());
 
     let ap = (p.into_vec() - a).normalize();
     let bp = (p.into_vec() - b).normalize();
-
-    // all direction vecs of our tri
-    let ab = (b - a).normalize();
-    let ba = (a - b).normalize();
-    let ac = (c - a).normalize();
-    let bc = (c - b).normalize();
 
     // angle at point a and point b on our tri
     let theta_a = Vec3f::dot(&ab, &ac);
@@ -327,7 +321,7 @@ pub struct Mat4f {
     pub mat: [[f64; 4]; 4],
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Vec3f {
     pub x: f64,
     pub y: f64,

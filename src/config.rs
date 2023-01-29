@@ -158,6 +158,10 @@ impl<'a> Triangle<'a> {
             },
             tex: None,
             clipped: false,
+            ab: Vec3f::default(),
+            ba: Vec3f::default(),
+            ac: Vec3f::default(),
+            bc: Vec3f::default(),
         }
     }
 }
@@ -390,6 +394,10 @@ fn load_obj<'a>(obj: &str, color_freq: f64, shade_mode: i32, mtls: &'a HashMap<S
             },
             tex: None,
             clipped: false,
+            ab: Vec3f::default(),
+            ba: Vec3f::default(),
+            ac: Vec3f::default(),
+            bc: Vec3f::default(),
         });
     }
 

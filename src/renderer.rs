@@ -9,6 +9,12 @@ pub struct Triangle<'a> {
     pub c: Vertex,
     pub tex: Option<&'a RgbaImage>,
     pub clipped: bool,
+
+    // directions of vertices to other vertices (used for point_in_tri())
+    pub ab: Vec3f,
+    pub ba: Vec3f,
+    pub ac: Vec3f,
+    pub bc: Vec3f,
 }
 
 #[derive(Clone, Debug)]
@@ -316,12 +322,14 @@ fn calc_lighting(norm: &Vec3f, pix_pos: &Point3d, u: &Uniforms, occ: &[Triangle]
     let light_dir = (u.light_pos.into_vec() - pix_pos.into_vec()).normalize();
 
     let ambient = u.ambient;
-    let diffuse = Vec3f::dot(norm, &light_dir).max(0.0) * u.diffuse;
+    let diffuse_theta = Vec3f::dot(norm, &light_dir).max(0.0);
+    let diffuse = diffuse_theta * u.diffuse;
 
     // our cam is always at the origin, so view dir is just the pixel pos (cam to pixel)
     let view_dir = pix_pos.into_vec().normalize();
     let reflected = reflect(&light_dir.inv(), norm);
-    let specular = Vec3f::dot(&view_dir.inv(), &reflected).max(0.0).powi(u.shininess as i32) * u.specular;
+    // multiply with ceil of diffuse theta to stop physically inaccurate instances of specular lighting when the light source is just barely behind the tri
+    let specular = Vec3f::dot(&view_dir.inv(), &reflected).max(0.0).powi(u.shininess as i32) * u.specular * diffuse_theta.ceil();
 
     let shadow = if u.render_shadows {
         shadow(occ, &u.light_pos, pix_pos)
@@ -345,7 +353,7 @@ fn shadow(occ: &[Triangle], light_pos: &Point3d, pix_pos: &Point3d) -> f64 {
 
         // is the point of intersection within the triangle and between the pixel and the light?
         if is_point_between(pix_pos, light_pos, &inter) {
-            if point_in_tri(&inter, [a, b, c]) {
+            if point_in_tri(&inter, [a, b, c], &tri.ab, &tri.ba, &tri.ac, &tri.bc) {
                 shadow = 0.0;
                 break;
             }
