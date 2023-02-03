@@ -394,11 +394,54 @@ fn mul_color(color: &[u8; 4], x: f64) -> [u8; 4] {
 // optimizations needed (likely not possible)
 fn tex_sample(tex: &RgbaImage, x: f64, y: f64) -> [u8; 4] {
     // confine coords to be between 0 and 1
-    let x = x.fract();
-    let y = y.fract();
-    let px = (x * (tex.width() - 1) as f64) as u32;
-    let py = (y * (tex.height() - 1) as f64) as u32;
-    tex.get_pixel(px, py).0
+    // adding 0.5 to each coord essentially puts texel coords in the center of pixels instead of the bottom left corner
+    // that allows us to really sample the nearest texel
+    let x = x.fract() * (tex.width() - 1) as f64 + 0.5;
+    let y = y.fract() * (tex.height() - 1) as f64 + 0.5;
+
+    let t = (x as u32, y as u32);
+    let t_x = (x as u32 + 1, y as u32);
+    let t_y = (x as u32, y as u32 + 1);
+    let t_xy = (x as u32 + 1, y as u32 + 1);
+
+    // the four texels we care about
+    let this = if t.0 < tex.width() && t.1 < tex.height() {
+        tex.get_pixel(t.0, t.1).0
+    } else {
+        [0; 4]
+    };
+    let this_x = if t_x.0 < tex.width() && t_x.1 < tex.height() {
+        tex.get_pixel(t_x.0, t_x.1).0
+    } else {
+        [0; 4]
+    };
+    let this_y = if t_y.0 < tex.width() && t_y.1 < tex.height() {
+        tex.get_pixel(t_y.0, t_y.1).0
+    } else {
+        [0; 4]
+    };
+    let this_xy = if t_xy.0 < tex.width() && t_xy.1 < tex.height() {
+        tex.get_pixel(t_xy.0, t_xy.1).0
+    } else {
+        [0; 4]
+    };
+
+    // how close our pixel is the four texels
+    let dx = 1.0 - ((x + 1.0).trunc() - x);
+    let dy = 1.0 - ((y + 1.0).trunc() - y);
+
+    // color at the lerped x values
+    let lerp_x_low = lerp_color(&this, &this_x, dx);
+    let lerp_x_high = lerp_color(&this_y, &this_xy, dx);
+
+    lerp_color(&lerp_x_low, &lerp_x_high, dy)
+}
+
+fn lerp_color(c1: &[u8; 4], c2: &[u8; 4], x: f64) -> [u8; 4] {
+    [lerp(c1[0] as f64, c2[0] as f64, x) as u8,
+    lerp(c1[1] as f64, c2[1] as f64, x) as u8,
+    lerp(c1[2] as f64, c2[2] as f64, x) as u8,
+    lerp(c1[3] as f64, c2[3] as f64, x) as u8]
 }
 
 pub fn sort_tri_points_y(tri: &mut Triangle) {

@@ -451,15 +451,23 @@ impl Vec3f {
         }
     }
 
+    // i luv dot product https://www.youtube.com/watch?v=LyGKycYT2v0
+    // the matrix that projects a onto b is b itself (as a matrix).
     pub fn dot(a: &Vec3f, b: &Vec3f) -> f64 {
         a.x * b.x + a.y * b.y + a.z * b.z
     }
 
+    // i also luv cross product https://www.youtube.com/watch?v=BaM7OCEm3G0&t=33s
+    // area of paralellpiped = det(matrix), where matrix is a 3x3 matrix consisting of: col 1: any vec [xyz], col 2: u, col 3: v.
+    // the only possible thing p can be with respect to the geometry of it all is a vector perp to u and v with a length equal to the area of the pgram of u and v because:
+    // p <dot> [xyz] = area of paralellpiped = area of pgram(u, v) * height([xyz] projected onto perp of pgram(u, v))
+    // the only possible thing p can be with respect to the algebra is part of the det of the matrix of xyz and u and v becuase:
+    // if p <dot> [xyz] = det(matrix) = x(a) + y(b) + z(c), p must be [abc] as the operations on each side of the equality are the same.
     pub fn cross(a: &Vec3f, b: &Vec3f) -> Self {
         Self {
-            x: a.y * b.z - a.z * b.y,
-            y: a.z * b.x - a.x * b.z,
-            z: a.x * b.y - a.y * b.x,
+            x: a.y * b.z - a.z * b.y, // call this `a`
+            y: a.z * b.x - a.x * b.z, // call this `b`
+            z: a.x * b.y - a.y * b.x, // call this `c`
         }
     }
 

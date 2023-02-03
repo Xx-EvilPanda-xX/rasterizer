@@ -34,7 +34,9 @@ pub struct Config<'a> {
 }
 
 impl<'a> Config<'a> {
-    pub fn new(text: &str, obj: &Option<(String, String)>, textures: &'a HashMap<String, MtlData>) -> Self {
+
+    // text: <name>.txt, obj: <name>.obj
+    pub fn new(text: &str, obj: &Option<String>, textures: &'a HashMap<String, MtlData>) -> Self {
         let mut config = String::new();
         for line in text.lines() {
             if line.starts_with("//") {
@@ -80,10 +82,10 @@ impl<'a> Config<'a> {
 
         if let Some(text) = obj {
             triangles = load_obj(
-                &text.0,
+                &text,
+                textures,
                 color_freq.parse().expect("Failed to parse color_freq"),
-                shade_mode.parse().expect("Failed to parse shade_mode"),
-                textures
+                shade_mode.parse().expect("Failed to parse shade_mode")
             );
         } else {
             for section in sections {
@@ -264,7 +266,7 @@ fn field<'a>(name: &str, args: &mut &'a str) -> Result<&'a str, FieldError> {
     Ok(f)
 }
 
-fn load_obj<'a>(obj: &str, color_freq: f64, shade_mode: i32, mtls: &'a HashMap<String, MtlData>) -> Vec<Triangle<'a>> {
+fn load_obj<'a>(obj: &str, mtls: &'a HashMap<String, MtlData>, color_freq: f64, shade_mode: i32) -> Vec<Triangle<'a>> {
     // vertex data
     let mut vertices = Vec::new();
     // indices into vertex data
@@ -402,24 +404,16 @@ fn load_obj<'a>(obj: &str, color_freq: f64, shade_mode: i32, mtls: &'a HashMap<S
     }
 
     for &(tri, tex, i) in vt_indices.iter() {
-        let tex_a = tex_coords[tri[0] as usize];
-        let tex_b = tex_coords[tri[1] as usize];
-        let tex_c = tex_coords[tri[2] as usize];
-
-        triangles[i].a.tex = tex_a;
-        triangles[i].b.tex = tex_b;
-        triangles[i].c.tex = tex_c;
+        triangles[i].a.tex = tex_coords[tri[0] as usize];
+        triangles[i].b.tex = tex_coords[tri[1] as usize];
+        triangles[i].c.tex = tex_coords[tri[2] as usize];
         triangles[i].tex = tex;
     }
 
     for &(tri, i) in vn_indices.iter() {
-        let n_a = normals[tri[0] as usize];
-        let n_b = normals[tri[1] as usize];
-        let n_c = normals[tri[2] as usize];
-
-        triangles[i].a.n = n_a;
-        triangles[i].b.n = n_b;
-        triangles[i].c.n = n_c;
+        triangles[i].a.n = normals[tri[0] as usize];
+        triangles[i].b.n = normals[tri[1] as usize];
+        triangles[i].c.n = normals[tri[2] as usize];
     }
 
     triangles

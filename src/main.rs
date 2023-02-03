@@ -33,16 +33,14 @@ fn main() {
 
     let config_str = get_config(&args[1]);
     let obj = if args.len() == 4 {
-        Some(
-            (std::fs::read_to_string(args[2].clone() + ".obj").expect("Failed to locate obj file"),
-            std::fs::read_to_string(args[2].clone() + ".mtl").expect("Failed to locate mtl file"))
-        )
+            (Some(std::fs::read_to_string(args[2].clone() + ".obj").expect("Failed to locate obj file")),
+            Some(std::fs::read_to_string(args[2].clone() + ".mtl").expect("Failed to locate mtl file")))
     } else {
-        None
+        (None, None)
     };
 
-    let mtls = load_mtl_data(&obj);
-    let config = Config::new(&config_str, &obj, &mtls);
+    let mtls = load_mtl_data(&obj.1);
+    let config = Config::new(&config_str, &obj.0, &mtls);
 
     if config.render_shadows {
         println!("WARNING: Shadow rendering is incredibly slow and time to render will increase with the sqaure of the triangle count. (recommendation: do not exceed 10000 tris at 4k res)");
@@ -156,11 +154,11 @@ pub struct MtlData {
     tex: Option<RgbaImage>,
 }
 
-fn load_mtl_data(obj: &Option<(String, String)>) -> HashMap<String, MtlData> {
+fn load_mtl_data(mtl: &Option<String>) -> HashMap<String, MtlData> {
     let mut mtls = HashMap::new();
 
-    if let Some(obj) = obj {
-        for mat in obj.1.split("newmtl ").skip(1) {
+    if let Some(mtl) = mtl {
+        for mat in mtl.split("newmtl ").skip(1) {
             if let Some(name) = get_name(mat) {
                 let color = get_color(mat).expect("mtl is missing diffuse color");
                 let tex = get_tex(mat);
