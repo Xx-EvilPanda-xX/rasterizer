@@ -52,6 +52,7 @@ pub struct Uniforms {
     pub shininess: u32,
     pub legacy: bool,
     pub render_shadows: bool,
+    pub tex_sample_lerp: bool,
 }
 
 pub fn rasterize(buf: &mut SubBuffer, tri: &Triangle, occ: &[Triangle], u: &Uniforms) -> u32 {
@@ -272,7 +273,7 @@ fn pixel_shader(tri: &Triangle, occ: &[Triangle], u: &Uniforms, planes: &Attribu
             // because otherwise we get incorrect results. we do the same with some other attributes too.
             let vt_x = lerp_fast(&planes.tex_x, x_world, y_world);
             let vt_y = lerp_fast(&planes.tex_y, x_world, y_world);
-            tex_sample(tex, vt_x, vt_y)
+            tex_sample(tex, vt_x, vt_y, u.tex_sample_lerp)
         } else {
             [lerp_fast(&planes.color_r, x, y).round() as u8,
             lerp_fast(&planes.color_g, x, y).round() as u8,
@@ -295,7 +296,7 @@ fn pixel_shader(tri: &Triangle, occ: &[Triangle], u: &Uniforms, planes: &Attribu
         let base_color = if let Some(tex) = tri.tex {
             let vt_x = tri.a.tex[0] * weights_world.a + tri.b.tex[0] * weights_world.b + tri.c.tex[0] * weights_world.c;
             let vt_y = tri.a.tex[1] * weights_world.a + tri.b.tex[1] * weights_world.b + tri.c.tex[1] * weights_world.c;
-            tex_sample(tex, vt_x, vt_y)
+            tex_sample(tex, vt_x, vt_y, u.tex_sample_lerp)
         } else {
             let a = [tri.a.color[0] as f64, tri.a.color[1] as f64, tri.a.color[2] as f64];
             let b = [tri.b.color[0] as f64, tri.b.color[1] as f64, tri.b.color[2] as f64];
@@ -392,49 +393,53 @@ fn mul_color(color: &[u8; 4], x: f64) -> [u8; 4] {
 
 // slowest function by far
 // optimizations needed (likely not possible)
-fn tex_sample(tex: &RgbaImage, x: f64, y: f64) -> [u8; 4] {
+fn tex_sample(tex: &RgbaImage, x: f64, y: f64, sample_lerp: bool) -> [u8; 4] {
     // confine coords to be between 0 and 1
     // adding 0.5 to each coord essentially puts texel coords in the center of pixels instead of the bottom left corner
     // that allows us to really sample the nearest texel
     let x = x.fract() * (tex.width() - 1) as f64 + 0.5;
     let y = y.fract() * (tex.height() - 1) as f64 + 0.5;
 
-    let t = (x as u32, y as u32);
-    let t_x = (x as u32 + 1, y as u32);
-    let t_y = (x as u32, y as u32 + 1);
-    let t_xy = (x as u32 + 1, y as u32 + 1);
+    if sample_lerp {
+        let t = (x as u32, y as u32);
+        let t_x = (x as u32 + 1, y as u32);
+        let t_y = (x as u32, y as u32 + 1);
+        let t_xy = (x as u32 + 1, y as u32 + 1);
 
-    // the four texels we care about
-    let this = if t.0 < tex.width() && t.1 < tex.height() {
-        tex.get_pixel(t.0, t.1).0
-    } else {
-        [0; 4]
-    };
-    let this_x = if t_x.0 < tex.width() && t_x.1 < tex.height() {
-        tex.get_pixel(t_x.0, t_x.1).0
-    } else {
-        [0; 4]
-    };
-    let this_y = if t_y.0 < tex.width() && t_y.1 < tex.height() {
-        tex.get_pixel(t_y.0, t_y.1).0
-    } else {
-        [0; 4]
-    };
-    let this_xy = if t_xy.0 < tex.width() && t_xy.1 < tex.height() {
-        tex.get_pixel(t_xy.0, t_xy.1).0
-    } else {
-        [0; 4]
-    };
+        // the four texels we care about
+        let this = if t.0 < tex.width() && t.1 < tex.height() {
+            tex.get_pixel(t.0, t.1).0
+        } else {
+            [0; 4]
+        };
+        let this_x = if t_x.0 < tex.width() && t_x.1 < tex.height() {
+            tex.get_pixel(t_x.0, t_x.1).0
+        } else {
+            [0; 4]
+        };
+        let this_y = if t_y.0 < tex.width() && t_y.1 < tex.height() {
+            tex.get_pixel(t_y.0, t_y.1).0
+        } else {
+            [0; 4]
+        };
+        let this_xy = if t_xy.0 < tex.width() && t_xy.1 < tex.height() {
+            tex.get_pixel(t_xy.0, t_xy.1).0
+        } else {
+            [0; 4]
+        };
 
-    // how close our pixel is the four texels
-    let dx = 1.0 - ((x + 1.0).trunc() - x);
-    let dy = 1.0 - ((y + 1.0).trunc() - y);
+        // how close our pixel is the four texels
+        let dx = 1.0 - ((x + 1.0).trunc() - x);
+        let dy = 1.0 - ((y + 1.0).trunc() - y);
 
-    // color at the lerped x values
-    let lerp_x_low = lerp_color(&this, &this_x, dx);
-    let lerp_x_high = lerp_color(&this_y, &this_xy, dx);
+        // color at the lerped x values
+        let lerp_x_low = lerp_color(&this, &this_x, dx);
+        let lerp_x_high = lerp_color(&this_y, &this_xy, dx);
 
-    lerp_color(&lerp_x_low, &lerp_x_high, dy)
+        lerp_color(&lerp_x_low, &lerp_x_high, dy)
+    } else {
+        tex.get_pixel(x as u32, y as u32).0
+    }
 }
 
 fn lerp_color(c1: &[u8; 4], c2: &[u8; 4], x: f64) -> [u8; 4] {

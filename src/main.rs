@@ -65,6 +65,7 @@ fn main() {
         shininess: config.shininess,
         legacy: config.legacy,
         render_shadows: config.render_shadows,
+        tex_sample_lerp: config.tex_sample_lerp,
     };
 
     let mut tris = config.triangles;

@@ -28,6 +28,7 @@ pub struct Config<'a> {
     pub specular: f64,
     pub shininess: u32,
     pub render_shadows: bool,
+    pub tex_sample_lerp: bool,
     pub render_threads: u32,
     pub show_progress: bool,
     pub triangles: Vec<Triangle<'a>>,
@@ -75,6 +76,7 @@ impl<'a> Config<'a> {
         let specular = eval(field("specular", &mut img_config), legacy, "0.0");
         let shininess = eval(field("shininess", &mut img_config), legacy, "0");
         let render_shadows = eval(field("render_shadows", &mut img_config), legacy, "false");
+        let tex_sample_lerp = eval(field("tex_sample_lerp", &mut img_config), legacy, "false");
         let render_threads = eval(field("render_threads", &mut img_config), legacy, "1");
         let show_progess = eval(field("show_progress", &mut img_config), legacy, "false");
 
@@ -114,6 +116,7 @@ impl<'a> Config<'a> {
             specular: specular.parse().expect("Failed to parse specular"),
             shininess: shininess.parse().expect("Failed to parse shininess"),
             render_shadows: render_shadows.parse().expect("Failed to parse render_shadows"),
+            tex_sample_lerp: tex_sample_lerp.parse().expect("Failed to parse tex_sample_lerp"),
             render_threads: render_threads.parse().expect("Failed to parse render_threads"),
             show_progress: show_progess.parse().expect("Failed to parse show_progress"),
             triangles,
@@ -193,34 +196,38 @@ fn eval<'a>(field: Result<&'a str, FieldError>, legacy: bool, default: &'a str) 
 
 fn print_field_help() {
     println!("Fields should be layout like so for the render config:");
-    println!("width = ?
-height = ?
-clear_color = [?, ?, ?]
-legacy = ?
-color_freq = ?
-shade_mode = ?
-fov = ?
-n = ?
-f = ?
-scale = ?
-rot_x = ?
-rot_y = ?
-rot_z = ?
-trans_x = ?
-trans_y = ?
-trans_z = ?
-light_pos = [?, ?, ?]
-ambient = ?
-diffuse = ?
-specular = ?
-shininess = ?");
+    println!("width = u32
+height = u32
+clear_color = [u8, u8, u8]
+legacy = bool
+color_freq = f64
+shade_mode = u32
+fov = f64
+n = f64
+f = f64
+scale = f64
+rot_x = f64
+rot_y = f64
+rot_z = f64
+trans_x = f64
+trans_y = f64
+trans_z = f64
+light_pos = [f64, f64, f64]
+ambient = f64
+diffuse = f64
+specular = f64
+shininess = u32
+render_shadows: bool,
+tex_sample_lerp: bool,
+render_threads: u32,
+show_progress: bool");
     println!("\nAnd like so for triangle configs:");
-    println!("a = [?, ?, ?]
-b = [?, ?, ?]
-c = [?, ?, ?]
-color_a = [?, ?, ?]
-color_a = [?, ?, ?]
-color_a = [?, ?, ?]");
+    println!("a = [f64, f64, f64]
+b = [f64, f64, f64]
+c = [f64, f64, f64]
+color_a = [u8, u8, u8]
+color_a = [u8, u8, u8]
+color_a = [u8, u8, u8]");
 }
 
 fn parse_arr<T: Copy + Default + FromStr, const N: usize>(mut s: &str) -> [T; N]
