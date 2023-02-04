@@ -378,8 +378,10 @@ fn load_obj<'a>(obj: &str, mtls: &'a HashMap<String, MtlData>, color_freq: f64, 
         triangles.push(Triangle {
             a: Vertex {
                 pos: a,
+                // these values are intialized in the vertex shader
                 pos_world: Point3d::origin(),
                 pos_clip: Point3d::origin(),
+
                 color: color.unwrap_or(color_a),
                 // both of these may or not be initialized with a different value in the below loops
                 n,
@@ -402,6 +404,7 @@ fn load_obj<'a>(obj: &str, mtls: &'a HashMap<String, MtlData>, color_freq: f64, 
                 tex: [0.0, 0.0],
             },
             tex: None,
+            // these values are intitalized in the vertex shader
             clipped: false,
             ab: Vec3f::default(),
             ba: Vec3f::default(),

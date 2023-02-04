@@ -14,7 +14,7 @@ pub fn point_in_tri(p: &Point3d, tri: [&Point3d; 3], ab: &Vec3f, ba: &Vec3f, ac:
     let theta_a = Vec3f::dot(&ab, &ac);
     let theta_b = Vec3f::dot(&ba, &bc);
 
-    // angles between our point of intersection and the sides of our tri
+    // angles between our point and the sides of our tri
     let theta_iab = Vec3f::dot(&ap, &ab);
     let theta_iac = Vec3f::dot(&ap, &ac);
     let theta_iba = Vec3f::dot(&bp, &ba);
@@ -37,11 +37,13 @@ pub fn lerp(a: f64, b: f64, c: f64) -> f64 {
     a + c * (b - a)
 }
 
-// solve for z given x and y with respect to a plane
-pub fn lerp_fast(p: &Plane, x: f64, y: f64) -> f64 {
-    let point = Point2d::new(x as f64, y as f64);
-    let z = (p.d - p.a * point.x - p.b * point.y) / p.c;
-    z
+// solve for an z, y, or z given xy, xz, or yz
+pub fn lerp_fast(p: &Plane, x: f64, y: f64, z: f64) -> f64 {
+    match p.solve_type {
+        PlaneSolveType::X => (p.d - p.b * y - p.c * z) / p.a,
+        PlaneSolveType::Y => (p.d - p.a * x - p.c * z) / p.b,
+        PlaneSolveType::Z => (p.d - p.a * x - p.b * y) / p.c,
+    }
 }
 
 pub struct VertexWeights {
@@ -139,13 +141,26 @@ pub fn is_point_between(p1: &Point3d, p2: &Point3d, between: &Point3d) -> bool {
     to_p1 < max_dist && to_p2 < max_dist
 }
 
-// only the x and y components of the points being passed in here are used, the z coming from the last args
-pub fn plane_from_points_z(p1: &Point3d, p2: &Point3d, p3: &Point3d, z1: f64, z2: f64, z3: f64) -> Plane {
-    plane_from_points(&Point3d::new(p1.x, p1.y, z1), &Point3d::new(p2.x, p2.y, z2), &Point3d::new(p3.x, p3.y, z3))
+// use two (unknown) components from the points as well as the attrib to create an interpolation plane
+pub fn attrib_plane(p1: &Point3d, p2: &Point3d, p3: &Point3d, a1: f64, a2: f64, a3: f64) -> Plane {
+    let plane_1 = plane_from_points(&Point3d::new(p1.x, p1.y, a1), &Point3d::new(p2.x, p2.y, a2), &Point3d::new(p3.x, p3.y, a3), PlaneSolveType::Z);
+    let plane_2 = plane_from_points(&Point3d::new(p1.x, a1, p1.z), &Point3d::new(p2.x, a2, p2.z), &Point3d::new(p3.x, a3, p3.z), PlaneSolveType::Y);
+    let plane_3 = plane_from_points(&Point3d::new(a1, p1.y, p1.z), &Point3d::new(a2, p2.y, p2.z), &Point3d::new(a3, p3.y, p3.z), PlaneSolveType::X);
+
+    if check_solve_type(&plane_1) {
+        plane_1
+    } else if check_solve_type(&plane_2) {
+        plane_2
+    } else if check_solve_type(&plane_3) {
+        plane_3
+    } else {
+        // the plane is undefined (OK, since a tri made of these points won't be rendered anyway)
+        plane_1
+    }
 }
 
 // finds plane in the form of ax + by + cz = d from three points
-pub fn plane_from_points(p1: &Point3d, p2: &Point3d, p3: &Point3d) -> Plane {
+pub fn plane_from_points(p1: &Point3d, p2: &Point3d, p3: &Point3d, solve_type: PlaneSolveType) -> Plane {
     let v1 = Vec3f::new(p2.x, p2.y, p2.z) - Vec3f::new(p1.x, p1.y, p1.z);
     let v2 = Vec3f::new(p3.x, p3.y, p3.z) - Vec3f::new(p1.x, p1.y, p1.z);
 
@@ -157,12 +172,22 @@ pub fn plane_from_points(p1: &Point3d, p2: &Point3d, p3: &Point3d) -> Plane {
         b: n.y,
         c: n.z,
         d,
+        solve_type,
+    }
+}
+
+// check if a plane can be solved with its current solve type
+fn check_solve_type(plane: &Plane) -> bool {
+    match plane.solve_type {
+        PlaneSolveType::X => plane.a != 0.0,
+        PlaneSolveType::Y => plane.b != 0.0,
+        PlaneSolveType::Z => plane.c != 0.0,
     }
 }
 
 // find the point of intersection of two lines
 pub fn solve_lines(l1: &Line2d, l2: &Line2d) -> Point2d {
-    // account for lines that are edge cases to the below formula
+    // account for lines that are edge cases for the below formula (completely vertical and horizontal lines)
     if l1.b.is_infinite() {
         return Point2d::new(l1.m, solve_y(l2, l1.m));
     }
@@ -314,6 +339,14 @@ pub struct Plane {
     pub b: f64,
     pub c: f64,
     pub d: f64,
+    solve_type: PlaneSolveType,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum PlaneSolveType {
+    X,
+    Y,
+    Z,
 }
 
 #[derive(Debug, Clone, PartialEq)]

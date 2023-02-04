@@ -100,7 +100,7 @@ fn main() {
             let mut sub_buf = SubBuffer {
                 color,
                 depth,
-                dims: (dims.0, chunk_height), // all chunks are the same width
+                dims: (dims.0, chunk_height), // all chunks are the same width, but not neccassarily the same height
                 start_y: i * chunk_size_y,
             };
 

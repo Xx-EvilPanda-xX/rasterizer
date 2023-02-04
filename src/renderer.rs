@@ -10,7 +10,7 @@ pub struct Triangle<'a> {
     pub tex: Option<&'a RgbaImage>,
     pub clipped: bool,
 
-    // directions of vertices to other vertices (used for point_in_tri())
+    // directions of each vertex to every other vertex (used for point_in_tri())
     pub ab: Vec3f,
     pub ba: Vec3f,
     pub ac: Vec3f,
@@ -60,17 +60,17 @@ pub fn rasterize(buf: &mut SubBuffer, tri: &Triangle, occ: &[Triangle], u: &Unif
     let (a, b, c) = (&tri.a.pos, &tri.b.pos, &tri.c.pos);
     let (a_world, b_world, c_world) = (&tri.a.pos_world, &tri.b.pos_world, &tri.c.pos_world);
     let planes = AttributePlanes {
-        color_r: plane_from_points_z(a, b, c, tri.a.color[0] as f64, tri.b.color[0] as f64, tri.c.color[0] as f64),
-        color_g: plane_from_points_z(a, b, c, tri.a.color[1] as f64, tri.b.color[1] as f64, tri.c.color[1] as f64),
-        color_b: plane_from_points_z(a, b, c, tri.a.color[2] as f64, tri.b.color[2] as f64, tri.c.color[2] as f64),
-        n_x: plane_from_points_z(a_world, b_world, c_world, tri.a.n.x, tri.b.n.x, tri.c.n.x),
-        n_y: plane_from_points_z(a_world, b_world, c_world, tri.a.n.y, tri.b.n.y, tri.c.n.y),
-        n_z: plane_from_points_z(a_world, b_world, c_world, tri.a.n.z, tri.b.n.z, tri.c.n.z),
-        tex_x: plane_from_points_z(a_world, b_world, c_world, tri.a.tex[0], tri.b.tex[0], tri.c.tex[0]),
-        tex_y: plane_from_points_z(a_world, b_world, c_world, tri.a.tex[1], tri.b.tex[1], tri.c.tex[1]),
-        pos_x: plane_from_points_z(a, b, c, tri.a.pos_clip.x, tri.b.pos_clip.x, tri.c.pos_clip.x),
-        pos_y: plane_from_points_z(a, b, c, tri.a.pos_clip.y, tri.b.pos_clip.y, tri.c.pos_clip.y),
-        pos_z: plane_from_points_z(a, b, c, tri.a.pos_clip.z, tri.b.pos_clip.z, tri.c.pos_clip.z),
+        color_r: plane_from_points(&Point3d::new(a.x, a.y, tri.a.color[0] as f64), &Point3d::new(b.x, b.y, tri.b.color[0] as f64), &Point3d::new(c.x, c.y, tri.c.color[0] as f64), PlaneSolveType::Z),
+        color_b: plane_from_points(&Point3d::new(a.x, a.y, tri.a.color[1] as f64), &Point3d::new(b.x, b.y, tri.b.color[1] as f64), &Point3d::new(c.x, c.y, tri.c.color[1] as f64), PlaneSolveType::Z),
+        color_g: plane_from_points(&Point3d::new(a.x, a.y, tri.a.color[2] as f64), &Point3d::new(b.x, b.y, tri.b.color[2] as f64), &Point3d::new(c.x, c.y, tri.c.color[2] as f64), PlaneSolveType::Z),
+        n_x: attrib_plane(a_world, b_world, c_world, tri.a.n.x, tri.b.n.x, tri.c.n.x),
+        n_y: attrib_plane(a_world, b_world, c_world, tri.a.n.y, tri.b.n.y, tri.c.n.y),
+        n_z: attrib_plane(a_world, b_world, c_world, tri.a.n.z, tri.b.n.z, tri.c.n.z),
+        tex_x: attrib_plane(a_world, b_world, c_world, tri.a.tex[0], tri.b.tex[0], tri.c.tex[0]),
+        tex_y: attrib_plane(a_world, b_world, c_world, tri.a.tex[1], tri.b.tex[1], tri.c.tex[1]),
+        pos_x: plane_from_points(&Point3d::new(a.x, a.y, tri.a.pos_clip.x), &Point3d::new(b.x, b.y, tri.b.pos_clip.x), &Point3d::new(c.x, c.y, tri.c.pos_clip.x), PlaneSolveType::Z),
+        pos_y: plane_from_points(&Point3d::new(a.x, a.y, tri.a.pos_clip.y), &Point3d::new(b.x, b.y, tri.b.pos_clip.y), &Point3d::new(c.x, c.y, tri.c.pos_clip.y), PlaneSolveType::Z),
+        pos_z: plane_from_points(&Point3d::new(a.x, a.y, tri.a.pos_clip.z), &Point3d::new(b.x, b.y, tri.b.pos_clip.z), &Point3d::new(c.x, c.y, tri.c.pos_clip.z), PlaneSolveType::Z),
     };
 
     let mut pixels_shaded = 0;
@@ -90,7 +90,7 @@ pub fn rasterize(buf: &mut SubBuffer, tri: &Triangle, occ: &[Triangle], u: &Unif
                 _ => unreachable!(),
             };
 
-            // YOU CANNOT ROUND HERE. It creates situtations where the start and end x are outside our tri
+            // YOU CANNOT ROUND HERE (.round()). It creates situtations where the start and end x are outside our tri
             let mut start_x = start_x.ceil() as u32;
             let mut end_x = end_x.ceil() as u32;
             if start_x > end_x {
@@ -100,9 +100,10 @@ pub fn rasterize(buf: &mut SubBuffer, tri: &Triangle, occ: &[Triangle], u: &Unif
             start_x = start_x.clamp(0, dims.0 - 1);
             end_x = end_x.clamp(0, dims.0 - 1);
             for x in start_x..end_x {
-                // localize the index to the sub buffer
+                // localize the index into the sub buffer to the current chunk
                 let i = (y - buf.start_y) * dims.0 + x;
-                let depth = lerp_fast(&planes.pos_z, x as f64, y as f64);
+                // we can safely pass in 0 for the z here because we will never being solving for anything other than z with this plane
+                let depth = lerp_fast(&planes.pos_z, x as f64, y as f64, 0.0);
                 if depth < buf.depth[i as usize] && depth >= super::SCREEN_Z {
                     let color = pixel_shader(tri, occ, u, &planes, x, y);
 
@@ -198,12 +199,12 @@ pub fn vertex_shader(tri: &mut Triangle, u: &Uniforms, dims: (u32, u32)) {
     b.pos_world = b.pos;
     c.pos_world = c.pos;
 
-    // no non-uniform scaling is actually done to our points, so normals will be fine too.
+    // no non-uniform scaling is actually done to our points, so its fine to multiply normals by the model too.
     a.n = mul_point_matrix(&a.n.into_point(), &u.model.no_trans()).into_vec().normalize();
     b.n = mul_point_matrix(&b.n.into_point(), &u.model.no_trans()).into_vec().normalize();
     c.n = mul_point_matrix(&c.n.into_point(), &u.model.no_trans()).into_vec().normalize();
 
-    // primitive implementation of clipping (so z !>= 0 for perspective division, otherwise weird stuff unfolds)
+    // primitive implementation of clipping (so z < 0 for perspective division, otherwise weird stuff unfolds)
     if (a.pos.z >= 0.0 || b.pos.z >= 0.0 || c.pos.z >= 0.0) && !u.legacy {
         // triangle (at least one vertex) was clipped, we cannot render it
         tri.clipped = true;
@@ -240,11 +241,11 @@ that a point on our triangle can be, as well as the actual distance.
 From there, it can produce a "weight" for each vertex, to be
 multiplied with our attributes.
 
-An interesting thing to note is that if a 2 or more verts of a tri have perfectly equal x and y values in world space,
+An interesting thing to note is that if a 1 or more verts of a tri have perfectly equal x and y values in world space,
 interpolation won't actually work. This is because any interpolation plane created with this triangle
 in mind will have an undefined slope. Therefore, trying to solve for a z value on this plane from
 a know x and y will result in a `NaN` or `inf`. The only way to solve this would be to do interpolation in 4
-dimensions and solve for w from a know x, y, and z, which im definetly not gonna do.
+dimensions and solve for w from a know x, y, and z, which im definetly not gonna do. (FIXED)
 */
 
 fn pixel_shader(tri: &Triangle, occ: &[Triangle], u: &Uniforms, planes: &AttributePlanes, x: u32, y: u32) -> [u8; 4] {
@@ -253,31 +254,31 @@ fn pixel_shader(tri: &Triangle, occ: &[Triangle], u: &Uniforms, planes: &Attribu
     if INTERPOLATE_FAST {
         // position of our pixel in clip space
         let pix_clip_pos = Point3d::new(
-            lerp_fast(&planes.pos_x, x, y),
-            lerp_fast(&planes.pos_y, x, y),
-            lerp_fast(&planes.pos_z, x, y),
+            lerp_fast(&planes.pos_x, x, y, 0.0),
+            lerp_fast(&planes.pos_y, x, y, 0.0),
+            lerp_fast(&planes.pos_z, x, y, 0.0),
         );
 
         // position of our pixel in world space
         let pix_world_pos = mul_point_matrix(&pix_clip_pos, &u.inv_proj);
-        let (x_world, y_world) = (pix_world_pos.x, pix_world_pos.y);
+        let (x_world, y_world, z_world) = (pix_world_pos.x, pix_world_pos.y, pix_world_pos.z);
 
         let norm = Vec3f::new(
-            lerp_fast(&planes.n_x, x_world, y_world),
-            lerp_fast(&planes.n_y, x_world, y_world),
-            lerp_fast(&planes.n_z, x_world, y_world),
+            lerp_fast(&planes.n_x, x_world, y_world, z_world),
+            lerp_fast(&planes.n_y, x_world, y_world, z_world),
+            lerp_fast(&planes.n_z, x_world, y_world, z_world),
         );
 
         let base_color = if let Some(tex) = tri.tex {
             // we calculate texture coords with respect to our pixel's world space position rather than it's clip or raster space position
-            // because otherwise we get incorrect results. we do the same with some other attributes too.
-            let vt_x = lerp_fast(&planes.tex_x, x_world, y_world);
-            let vt_y = lerp_fast(&planes.tex_y, x_world, y_world);
+            // because otherwise we get perspective-incorrect results. we do the same with some other attributes too.
+            let vt_x = lerp_fast(&planes.tex_x, x_world, y_world, z_world);
+            let vt_y = lerp_fast(&planes.tex_y, x_world, y_world, z_world);
             tex_sample(tex, vt_x, vt_y, u.tex_sample_lerp)
         } else {
-            [lerp_fast(&planes.color_r, x, y).round() as u8,
-            lerp_fast(&planes.color_g, x, y).round() as u8,
-            lerp_fast(&planes.color_b, x, y).round() as u8,
+            [lerp_fast(&planes.color_r, x, y, 0.0).round() as u8,
+            lerp_fast(&planes.color_g, x, y, 0.0).round() as u8,
+            lerp_fast(&planes.color_b, x, y, 0.0).round() as u8,
             FULLY_OPAQUE]
         };
 
@@ -341,7 +342,6 @@ fn calc_lighting(norm: &Vec3f, pix_pos: &Point3d, u: &Uniforms, occ: &[Triangle]
     ambient + (diffuse + specular) * shadow
 }
 
-// theres something wrong with pix_pos
 fn shadow(occ: &[Triangle], light_pos: &Point3d, pix_pos: &Point3d) -> f64 {
     let line = line_3d_from_points(light_pos, pix_pos);
     let mut shadow = 1.0;
@@ -349,7 +349,8 @@ fn shadow(occ: &[Triangle], light_pos: &Point3d, pix_pos: &Point3d) -> f64 {
     // check for a collision with every triangle in the scene
     for tri in occ {
         let (a, b, c) = (&tri.a.pos_world, &tri.b.pos_world, &tri.c.pos_world);
-        let plane = plane_from_points(a, b, c);
+        // the solve type here doesn't actually matter since we are never actually solving for this plane, just intersecting it
+        let plane = plane_from_points(a, b, c, PlaneSolveType::Z);
         let inter = solve_line_plane(&line, &plane);
 
         // is the point of intersection within the triangle and between the pixel and the light?
@@ -384,15 +385,8 @@ fn reflect(incoming: &Vec3f, norm: &Vec3f) -> Vec3f {
     reflected
 }
 
-fn mul_color(color: &[u8; 4], x: f64) -> [u8; 4] {
-    [(color[0] as f64 * x) as u8,
-    (color[1] as f64 * x) as u8,
-    (color[2] as f64 * x) as u8,
-    color[3]]
-}
-
 // slowest function by far
-// optimizations needed (likely not possible)
+// optimizations needed (likely not possible, the slowness is from slow memory access)
 fn tex_sample(tex: &RgbaImage, x: f64, y: f64, sample_lerp: bool) -> [u8; 4] {
     // confine coords to be between 0 and 1
     // adding 0.5 to each coord essentially puts texel coords in the center of pixels instead of the bottom left corner
@@ -428,7 +422,7 @@ fn tex_sample(tex: &RgbaImage, x: f64, y: f64, sample_lerp: bool) -> [u8; 4] {
             [0; 4]
         };
 
-        // how close our pixel is the four texels
+        // how close our pixel to the bounds of the texel
         let dx = 1.0 - ((x + 1.0).trunc() - x);
         let dy = 1.0 - ((y + 1.0).trunc() - y);
 
@@ -447,6 +441,13 @@ fn lerp_color(c1: &[u8; 4], c2: &[u8; 4], x: f64) -> [u8; 4] {
     lerp(c1[1] as f64, c2[1] as f64, x) as u8,
     lerp(c1[2] as f64, c2[2] as f64, x) as u8,
     lerp(c1[3] as f64, c2[3] as f64, x) as u8]
+}
+
+fn mul_color(color: &[u8; 4], x: f64) -> [u8; 4] {
+    [(color[0] as f64 * x) as u8,
+    (color[1] as f64 * x) as u8,
+    (color[2] as f64 * x) as u8,
+    color[3]]
 }
 
 pub fn sort_tri_points_y(tri: &mut Triangle) {
