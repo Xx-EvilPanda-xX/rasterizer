@@ -187,48 +187,82 @@ pub fn rasterize(buf: &mut SubBuffer, tri: &Triangle, occ: &[Triangle], u: &Unif
     pixels_shaded
 }
 
-// mutates the triangle in place and leaves it in raster space
-pub fn vertex_shader(tri: &mut Triangle, u: &Uniforms, dims: (u32, u32)) {
-    let (a, b, c) = (&mut tri.a, &mut tri.b, &mut tri.c);
+// takes triangle in model space and returns it in raster space
+pub fn vertex_shader<'a>(tri: &Triangle<'a>, u: &Uniforms, dims: (u32, u32)) -> Triangle<'a> {
+    let (a, b, c) = (&tri.a, &tri.b, &tri.c);
 
-    a.pos = mul_point_matrix(&a.pos, &u.model);
-    b.pos = mul_point_matrix(&b.pos, &u.model);
-    c.pos = mul_point_matrix(&c.pos, &u.model);
+    let mut pos_a = mul_point_matrix(&a.pos, &u.model);
+    let mut pos_b = mul_point_matrix(&b.pos, &u.model);
+    let mut pos_c = mul_point_matrix(&c.pos, &u.model);
 
-    a.pos_world = a.pos;
-    b.pos_world = b.pos;
-    c.pos_world = c.pos;
+    let pos_world_a = pos_a;
+    let pos_world_b = pos_b;
+    let pos_world_c = pos_c;
 
     // no non-uniform scaling is actually done to our points, so its fine to multiply normals by the model too.
-    a.n = mul_point_matrix(&a.n.into_point(), &u.model.no_trans()).into_vec().normalize();
-    b.n = mul_point_matrix(&b.n.into_point(), &u.model.no_trans()).into_vec().normalize();
-    c.n = mul_point_matrix(&c.n.into_point(), &u.model.no_trans()).into_vec().normalize();
+    let n_a = mul_point_matrix(&a.n.into_point(), &u.model.no_trans()).into_vec().normalize();
+    let n_b = mul_point_matrix(&b.n.into_point(), &u.model.no_trans()).into_vec().normalize();
+    let n_c = mul_point_matrix(&c.n.into_point(), &u.model.no_trans()).into_vec().normalize();
 
+    let mut clipped = false;
     // primitive implementation of clipping (so z < 0 for perspective division, otherwise weird stuff unfolds)
-    if (a.pos.z >= 0.0 || b.pos.z >= 0.0 || c.pos.z >= 0.0) && !u.legacy {
+    if (pos_a.z >= 0.0 || pos_b.z >= 0.0 || pos_c.z >= 0.0) && !u.legacy {
         // triangle (at least one vertex) was clipped, we cannot render it
-        tri.clipped = true;
-        return;
+        clipped = true;
     }
 
-    a.pos = mul_point_matrix(&a.pos, &u.proj);
-    b.pos = mul_point_matrix(&b.pos, &u.proj);
-    c.pos = mul_point_matrix(&c.pos, &u.proj);
+    pos_a = mul_point_matrix(&pos_a, &u.proj);
+    pos_b = mul_point_matrix(&pos_b, &u.proj);
+    pos_c = mul_point_matrix(&pos_c, &u.proj);
 
-    a.pos_clip = a.pos;
-    b.pos_clip = b.pos;
-    c.pos_clip = c.pos;
+    let pos_clip_a = pos_a;
+    let pos_clip_b = pos_b;
+    let pos_clip_c = pos_c;
 
     // normalize to 0 to 1 and scale to raster space
-    a.pos.x = (a.pos.x + 1.0) / 2.0 * dims.0 as f64;
-    b.pos.x = (b.pos.x + 1.0) / 2.0 * dims.0 as f64;
-    c.pos.x = (c.pos.x + 1.0) / 2.0 * dims.0 as f64;
-    a.pos.y = (a.pos.y + 1.0) / 2.0 * dims.1 as f64;
-    b.pos.y = (b.pos.y + 1.0) / 2.0 * dims.1 as f64;
-    c.pos.y = (c.pos.y + 1.0) / 2.0 * dims.1 as f64;
+    pos_a.x = (pos_a.x + 1.0) / 2.0 * dims.0 as f64;
+    pos_b.x = (pos_b.x + 1.0) / 2.0 * dims.0 as f64;
+    pos_c.x = (pos_c.x + 1.0) / 2.0 * dims.0 as f64;
+    pos_a.y = (pos_a.y + 1.0) / 2.0 * dims.1 as f64;
+    pos_b.y = (pos_b.y + 1.0) / 2.0 * dims.1 as f64;
+    pos_c.y = (pos_c.y + 1.0) / 2.0 * dims.1 as f64;
+
+    Triangle {
+        a: Vertex {
+            pos: pos_a,
+            pos_world: pos_world_a,
+            pos_clip: pos_clip_a,
+            color: a.color,
+            n: n_a,
+            tex: a.tex,
+        },
+        b: Vertex {
+            pos: pos_b,
+            pos_world: pos_world_b,
+            pos_clip: pos_clip_b,
+            color: b.color,
+            n: n_b,
+            tex: b.tex,
+        },
+        c: Vertex {
+            pos: pos_c,
+            pos_world: pos_world_c,
+            pos_clip: pos_clip_c,
+            color: c.color,
+            n: n_c,
+            tex: c.tex,
+        },
+        tex: tri.tex,
+        clipped,
+        // these are initialized outside of vertex shader to avoid conflicts with vertex sorting
+        ab: Vec3f::default(),
+        ba: Vec3f::default(),
+        ac: Vec3f::default(),
+        bc: Vec3f::default(),
+    }
 }
 
-const FULLY_OPAQUE: u8 = 255;
+pub const FULLY_OPAQUE: u8 = 255;
 const INTERPOLATE_FAST: bool = true;
 
 /*
