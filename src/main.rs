@@ -1,8 +1,9 @@
 use std::{io::BufReader, fs::File, collections::HashMap, time::Instant};
+use camera::Camera;
 use image::{RgbImage, RgbaImage};
 use math::*;
 use config::Config;
-use winit::{event_loop::{ControlFlow, EventLoop}, window::WindowBuilder, dpi::LogicalSize, event::{Event, VirtualKeyCode}};
+use winit::{event_loop::{ControlFlow, EventLoop}, window::WindowBuilder, dpi::{LogicalSize, PhysicalPosition}, event::{Event, VirtualKeyCode, DeviceEvent}};
 use winit_input_helper::WinitInputHelper;
 use pixels::{Pixels, SurfaceTexture};
 use scoped_threadpool::Pool;
@@ -10,6 +11,7 @@ use scoped_threadpool::Pool;
 mod config;
 mod math;
 mod renderer;
+mod camera;
 
 // z coord of the "screen" (anything with a smaller z will not be shown)
 const SCREEN_Z: f64 = -1.0;
@@ -90,7 +92,7 @@ fn parse_args(args: &[String]) -> HashMap<String, String> {
     out
 }
 
-fn start_interactive(mut config: Config<'static>) {
+fn start_interactive(config: Config<'static>) {
     let event_loop = EventLoop::new();
     let mut input = WinitInputHelper::new();
     let size = LogicalSize::new(config.width as f64, config.height as f64);
@@ -100,6 +102,8 @@ fn start_interactive(mut config: Config<'static>) {
         .with_min_inner_size(size)
         .build(&event_loop)
         .unwrap();
+
+    window.set_cursor_visible(false);
 
     let mut frame_buffer = {
         let window_size = window.inner_size();
@@ -121,77 +125,90 @@ fn start_interactive(mut config: Config<'static>) {
     let mut last_instant = Instant::now();
     let mut last_frame = Instant::now();
 
+    let mut camera = Camera::new(Point3d::origin(), 0.0, 0.0);
+
     event_loop.run(move |event, _, control_flow| {
-        if let Event::RedrawRequested(_) = event {
-            let now = Instant::now();
-            let frame_time = now.duration_since(last_frame).as_secs_f64();
-            last_frame = now;
-            window.set_title(&format!("Renderer | {} FPS", (1.0 / frame_time).trunc()));
+        match &event {
+            Event::RedrawRequested(_) => {
+                let now = Instant::now();
+                let frame_time = now.duration_since(last_frame).as_secs_f64();
+                last_frame = now;
+                window.set_title(&format!("Renderer | {} FPS", (1.0 / frame_time).trunc()));
 
-            // vertex shader + misc
-            let matrices = get_matrices(&config);
-            let inv_proj = matrices.1.inverse();
-            let uniforms = renderer::Uniforms {
-                model: matrices.0,
-                proj: matrices.1,
-                inv_proj,
-                light_pos: config.light_pos,
-                ambient: config.ambient,
-                diffuse: config.diffuse,
-                specular: config.specular,
-                shininess: config.shininess,
-                legacy: config.legacy,
-                render_shadows: config.render_shadows,
-                tex_sample_lerp: config.tex_sample_lerp,
-            };
+                // vertex shader + misc
+                let (model, view, proj) = get_matrices(&config, Some(&camera));
+                let uniforms = renderer::Uniforms {
+                    model,
+                    view,
+                    proj,
+                    inv_view: view.inverse(),
+                    inv_proj: proj.inverse(),
+                    light_pos: config.light_pos,
+                    cam_pos: camera.loc,
+                    ambient: config.ambient,
+                    diffuse: config.diffuse,
+                    specular: config.specular,
+                    shininess: config.shininess,
+                    legacy: config.legacy,
+                    render_shadows: config.render_shadows,
+                    tex_sample_lerp: config.tex_sample_lerp,
+                };
 
-            vertex_shader_pass(&config.triangles, &mut processed_tris, &uniforms, dims);
-            clear(&mut buf, config.clear_color);
-            // end vertex shader + misc
+                vertex_shader_pass(&config.triangles, &mut processed_tris, &uniforms, dims, Some(&mut pool), config.render_threads);
+                clear(&mut buf, config.clear_color);
+                // end vertex shader + misc
 
-            // rasterize
-            let chunk_size_y = config.height / config.render_threads;
-            let mut color_chunks = buf.color.chunks_mut((chunk_size_y * dims.0) as usize * COLOR_BUF_CHANNELS);
-            let mut depth_chunks = buf.depth.chunks_mut((chunk_size_y * dims.0) as usize);
+                // rasterize
+                let chunk_size_y = config.height / config.render_threads;
+                let mut color_chunks = buf.color.chunks_mut((chunk_size_y * dims.0) as usize * COLOR_BUF_CHANNELS);
+                let mut depth_chunks = buf.depth.chunks_mut((chunk_size_y * dims.0) as usize);
 
-            pool.scoped(|spawner| {
-                for i in 0..config.render_threads {
-                    // obtain current chunks
-                    let color = color_chunks.next().unwrap();
-                    let depth = depth_chunks.next().unwrap();
+                pool.scoped(|spawner| {
+                    for i in 0..config.render_threads {
+                        // obtain current chunks
+                        let color = color_chunks.next().unwrap();
+                        let depth = depth_chunks.next().unwrap();
 
-                    let chunk_height = depth.len() as u32 / dims.0;
-                    let mut sub_buf = SubBuffer {
-                        color,
-                        depth,
-                        dims: (dims.0, chunk_height), // all chunks are the same width, but not neccassarily the same height
-                        start_y: i * chunk_size_y,
-                    };
+                        let chunk_height = depth.len() as u32 / dims.0;
+                        let mut sub_buf = SubBuffer {
+                            color,
+                            depth,
+                            dims: (dims.0, chunk_height), // all chunks are the same width, but not neccassarily the same height
+                            start_y: i * chunk_size_y,
+                        };
 
-                    let processed_tris = processed_tris.as_ref();
-                    let uniforms = &uniforms;
-                    spawner.execute(move || {
-                        for tri in processed_tris {
-                            if tri.clipped {
-                                continue;
+                        let processed_tris = processed_tris.as_ref();
+                        let uniforms = &uniforms;
+                        spawner.execute(move || {
+                            for tri in processed_tris {
+                                if tri.clipped {
+                                    continue;
+                                }
+
+                                renderer::rasterize(&mut sub_buf, tri, processed_tris, uniforms);
                             }
+                        });
+                    }
+                });
+                // end rasterize
 
-                            renderer::rasterize(&mut sub_buf, tri, processed_tris, uniforms);
-                        }
-                    });
+                // present
+                let pixels = frame_buffer.get_frame_mut();
+                flip_and_copy(&mut buf, pixels, dims);
+
+                if let Err(e) = frame_buffer.render() {
+                    println!("{}", e);
+                    *control_flow = ControlFlow::Exit;
                 }
-            });
-            // end rasterize
-
-            // present
-            let pixels = frame_buffer.get_frame_mut();
-            flip_and_copy(&mut buf, pixels, dims);
-
-            if let Err(e) = frame_buffer.render() {
-                println!("{}", e);
-                *control_flow = ControlFlow::Exit;
+                // end present
             }
-            // end present
+            Event::DeviceEvent { event, .. } => {
+                if let DeviceEvent::MouseMotion { delta } = event {
+                    camera.update_look(*delta);
+                    window.set_cursor_position(PhysicalPosition::new(config.width / 2, config.height / 2)).expect("Failed to set cursor position");
+                }
+            }
+            _ => {}
         }
 
         if input.update(&event) {
@@ -213,10 +230,8 @@ fn start_interactive(mut config: Config<'static>) {
                 }
             }
 
+            camera.update_pos(dt, &input);
             window.request_redraw();
-            config.rot_x += 10.0 * dt;
-            config.rot_y += 10.0 * dt;
-            config.rot_z += 10.0 * dt;
         }
     });
 }
@@ -270,13 +285,15 @@ fn render_to_image(config: &Config, save_name: &str) {
 
     let dims = (config.width, config.height);
 
-    let matrices = get_matrices(&config);
-    let inv_proj = matrices.1.inverse();
+    let (model, view, proj) = get_matrices(&config, None);
     let uniforms = renderer::Uniforms {
-        model: matrices.0,
-        proj: matrices.1,
-        inv_proj,
+        model,
+        view,
+        proj,
+        inv_view: view.inverse(),
+        inv_proj: proj.inverse(),
         light_pos: config.light_pos,
+        cam_pos: Point3d::origin(),
         ambient: config.ambient,
         diffuse: config.diffuse,
         specular: config.specular,
@@ -294,7 +311,7 @@ fn render_to_image(config: &Config, save_name: &str) {
     }
 
     let mut processed_tris = config.triangles.clone().into_boxed_slice();
-    vertex_shader_pass(&config.triangles, &mut processed_tris, &uniforms, dims);
+    vertex_shader_pass(&config.triangles, &mut processed_tris, &uniforms, dims, None, 0);
 
     if show_progress {
         println!("Done!");
@@ -426,9 +443,9 @@ fn get_tex(mat: &str) -> Option<RgbaImage> {
     None
 }
 
-fn get_matrices(config: &Config) -> (Mat4f, Mat4f) {
+fn get_matrices(config: &Config, camera: Option<&Camera>) -> (Mat4f, Mat4f, Mat4f) {
     if config.legacy {
-        return (Mat4f::new(), Mat4f::new());
+        return (Mat4f::new(), Mat4f::new(), Mat4f::new());
     }
 
     let mut trans = Mat4f::new();
@@ -466,10 +483,16 @@ fn get_matrices(config: &Config) -> (Mat4f, Mat4f) {
     model = math::mul_matrix_matrix(&model, &rot_y);
     model = math::mul_matrix_matrix(&model, &rot_z);
 
+    let view = if let Some(camera) = camera {
+        math::view(&camera.loc, camera.yaw, camera.pitch)
+    } else {
+        Mat4f::new()
+    };
+
     let perspective = math::get_perspective(config.fov, config.width as f64 / config.height as f64, config.n, config.f);
     let proj = math::frustum(&perspective);
 
-    (model, proj)
+    (model, view, proj)
 }
 
 // processed_tris will be filled with the output of the vertex shader
@@ -477,11 +500,32 @@ fn vertex_shader_pass<'a>(
     tris: &[renderer::Triangle<'a>],
     processed_tris: &mut [renderer::Triangle<'a>],
     u: &renderer::Uniforms,
-    dims: (u32, u32)
+    dims: (u32, u32),
+    pool: Option<&mut Pool>,
+    threads: u32,
 ) {
     assert_eq!(tris.len(), processed_tris.len());
 
-    for (tri, processed_tri) in tris.iter().zip(processed_tris.iter_mut()) {
+    if let Some(pool) = pool {
+        let chunk_size = tris.len() / threads as usize;
+        pool.scoped(|spawner| {
+            let chunks = tris.chunks(chunk_size);
+            let p_chunks = processed_tris.chunks_mut(chunk_size);
+            for (chunk, p_chunk) in chunks.zip(p_chunks) {
+                spawner.execute(move || {
+                    for (tri, processed_tri) in chunk.iter().zip(p_chunk.iter_mut()) {
+                        process_tri(tri, processed_tri, u, dims);
+                    }
+                });
+            }
+        });
+    } else {
+        for (tri, processed_tri) in tris.iter().zip(processed_tris.iter_mut()) {
+            process_tri(tri, processed_tri, u, dims);
+        }
+    }
+
+    fn process_tri<'a>(tri: &renderer::Triangle<'a>, processed_tri: &mut renderer::Triangle<'a>, u: &renderer::Uniforms, dims: (u32, u32)) {
         let mut processed = renderer::vertex_shader(tri, u, dims);
         renderer::sort_tri_points_y(&mut processed);
         processed.ab = (processed.b.pos_world.into_vec() - processed.a.pos_world.into_vec()).normalize();

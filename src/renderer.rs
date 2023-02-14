@@ -43,9 +43,12 @@ pub struct AttributePlanes {
 
 pub struct Uniforms {
     pub model: Mat4f,
+    pub view: Mat4f,
     pub proj: Mat4f,
+    pub inv_view: Mat4f,
     pub inv_proj: Mat4f,
     pub light_pos: Point3d,
+    pub cam_pos: Point3d,
     pub ambient: f64,
     pub diffuse: f64,
     pub specular: f64,
@@ -61,8 +64,8 @@ pub fn rasterize(buf: &mut SubBuffer, tri: &Triangle, occ: &[Triangle], u: &Unif
     let (a_world, b_world, c_world) = (&tri.a.pos_world, &tri.b.pos_world, &tri.c.pos_world);
     let planes = AttributePlanes {
         color_r: plane_from_points(&Point3d::new(a.x, a.y, tri.a.color[0] as f64), &Point3d::new(b.x, b.y, tri.b.color[0] as f64), &Point3d::new(c.x, c.y, tri.c.color[0] as f64), PlaneSolveType::Z),
-        color_b: plane_from_points(&Point3d::new(a.x, a.y, tri.a.color[1] as f64), &Point3d::new(b.x, b.y, tri.b.color[1] as f64), &Point3d::new(c.x, c.y, tri.c.color[1] as f64), PlaneSolveType::Z),
-        color_g: plane_from_points(&Point3d::new(a.x, a.y, tri.a.color[2] as f64), &Point3d::new(b.x, b.y, tri.b.color[2] as f64), &Point3d::new(c.x, c.y, tri.c.color[2] as f64), PlaneSolveType::Z),
+        color_g: plane_from_points(&Point3d::new(a.x, a.y, tri.a.color[1] as f64), &Point3d::new(b.x, b.y, tri.b.color[1] as f64), &Point3d::new(c.x, c.y, tri.c.color[1] as f64), PlaneSolveType::Z),
+        color_b: plane_from_points(&Point3d::new(a.x, a.y, tri.a.color[2] as f64), &Point3d::new(b.x, b.y, tri.b.color[2] as f64), &Point3d::new(c.x, c.y, tri.c.color[2] as f64), PlaneSolveType::Z),
         n_x: attrib_plane(a_world, b_world, c_world, tri.a.n.x, tri.b.n.x, tri.c.n.x),
         n_y: attrib_plane(a_world, b_world, c_world, tri.a.n.y, tri.b.n.y, tri.c.n.y),
         n_z: attrib_plane(a_world, b_world, c_world, tri.a.n.z, tri.b.n.z, tri.c.n.z),
@@ -191,10 +194,12 @@ pub fn rasterize(buf: &mut SubBuffer, tri: &Triangle, occ: &[Triangle], u: &Unif
 pub fn vertex_shader<'a>(tri: &Triangle<'a>, u: &Uniforms, dims: (u32, u32)) -> Triangle<'a> {
     let (a, b, c) = (&tri.a, &tri.b, &tri.c);
 
+    // model transform
     let mut pos_a = mul_point_matrix(&a.pos, &u.model);
     let mut pos_b = mul_point_matrix(&b.pos, &u.model);
     let mut pos_c = mul_point_matrix(&c.pos, &u.model);
 
+    // save model space position
     let pos_world_a = pos_a;
     let pos_world_b = pos_b;
     let pos_world_c = pos_c;
@@ -204,6 +209,11 @@ pub fn vertex_shader<'a>(tri: &Triangle<'a>, u: &Uniforms, dims: (u32, u32)) -> 
     let n_b = mul_point_matrix(&b.n.into_point(), &u.model.no_trans()).into_vec().normalize();
     let n_c = mul_point_matrix(&c.n.into_point(), &u.model.no_trans()).into_vec().normalize();
 
+    // view transform
+    pos_a = mul_point_matrix(&pos_a, &u.view);
+    pos_b = mul_point_matrix(&pos_b, &u.view);
+    pos_c = mul_point_matrix(&pos_c, &u.view);
+
     let mut clipped = false;
     // primitive implementation of clipping (so z < 0 for perspective division, otherwise weird stuff unfolds)
     if (pos_a.z >= 0.0 || pos_b.z >= 0.0 || pos_c.z >= 0.0) && !u.legacy {
@@ -211,10 +221,12 @@ pub fn vertex_shader<'a>(tri: &Triangle<'a>, u: &Uniforms, dims: (u32, u32)) -> 
         clipped = true;
     }
 
+    // projection transform
     pos_a = mul_point_matrix(&pos_a, &u.proj);
     pos_b = mul_point_matrix(&pos_b, &u.proj);
     pos_c = mul_point_matrix(&pos_c, &u.proj);
 
+    // save clip space position
     let pos_clip_a = pos_a;
     let pos_clip_b = pos_b;
     let pos_clip_c = pos_c;
@@ -293,8 +305,10 @@ fn pixel_shader(tri: &Triangle, occ: &[Triangle], u: &Uniforms, planes: &Attribu
             lerp_fast(&planes.pos_z, x, y, 0.0),
         );
 
-        // position of our pixel in world space
+        // position of our pixel in view space
         let pix_world_pos = mul_point_matrix(&pix_clip_pos, &u.inv_proj);
+        // position of our pixel in world space
+        let pix_world_pos = mul_point_matrix(&pix_world_pos, &u.inv_view);
         let (x_world, y_world, z_world) = (pix_world_pos.x, pix_world_pos.y, pix_world_pos.z);
 
         let norm = Vec3f::new(
@@ -326,6 +340,7 @@ fn pixel_shader(tri: &Triangle, occ: &[Triangle], u: &Uniforms, planes: &Attribu
             tri.a.pos_clip.z * weights_clip.a + tri.b.pos_clip.z * weights_clip.b + tri.c.pos_clip.z * weights_clip.c,
         );
         let pix_world_pos = mul_point_matrix(&pix_clip_pos, &u.inv_proj);
+        let pix_world_pos = mul_point_matrix(&pix_world_pos, &u.inv_view);
         let weights_world = lerp_slow([&tri.a.pos_world, &tri.b.pos_world, &tri.c.pos_world], pix_world_pos.x, pix_world_pos.y);
 
         let base_color = if let Some(tex) = tri.tex {
@@ -362,10 +377,9 @@ fn calc_lighting(norm: &Vec3f, pix_pos: &Point3d, u: &Uniforms, occ: &[Triangle]
     let diffuse = diffuse_theta * u.diffuse;
 
     // our cam is always at the origin, so view dir is just the pixel pos (cam to pixel)
-    let view_dir = pix_pos.into_vec().normalize();
+    let view_dir = (pix_pos.into_vec() - u.cam_pos.into_vec()).normalize();
     let reflected = reflect(&light_dir.inv(), norm);
-    // multiply with ceil of diffuse theta to stop physically inaccurate instances of specular lighting when the light source is just barely behind the tri
-    let specular = Vec3f::dot(&view_dir.inv(), &reflected).max(0.0).powi(u.shininess as i32) * u.specular * diffuse_theta.ceil();
+    let specular = Vec3f::dot(&view_dir.inv(), &reflected).max(0.0).powi(u.shininess as i32) * u.specular;
 
     let shadow = if u.render_shadows {
         shadow(occ, &u.light_pos, pix_pos)

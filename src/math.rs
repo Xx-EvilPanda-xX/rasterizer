@@ -242,6 +242,32 @@ pub fn frustum(p: &Perspective) -> Mat4f {
     mat
 }
 
+pub fn view(pos: &Point3d, yaw: f64, pitch: f64) -> Mat4f {
+    let mut trans = Mat4f::new();
+    let mut rot_x = Mat4f::new();
+    let mut rot_y = Mat4f::new();
+
+    trans[0][3] = -pos.x;
+    trans[1][3] = -pos.y;
+    trans[2][3] = -pos.z;
+
+    let yaw = yaw.to_radians();
+    let pitch = -pitch.to_radians();
+    rot_x[1][1] = pitch.cos();
+    rot_x[1][2] = -pitch.sin();
+    rot_x[2][1] = pitch.sin();
+    rot_x[2][2] = pitch.cos();
+
+    rot_y[2][2] = yaw.cos();
+    rot_y[0][0] = yaw.cos();
+    rot_y[0][2] = yaw.sin();
+    rot_y[2][0] = -yaw.sin();
+
+    let mut out = mul_matrix_matrix(&rot_x, &rot_y);
+    out = mul_matrix_matrix(&out, &trans);
+    out
+}
+
 // multiply a 3d point with a 4x4 matrix
 pub fn mul_point_matrix(point: &Point3d, mat: &Mat4f) -> Point3d {
     let mut out = Point3d::origin();
@@ -349,7 +375,7 @@ pub enum PlaneSolveType {
     Z,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Mat4f {
     pub mat: [[f64; 4]; 4],
 }
@@ -505,11 +531,15 @@ impl Vec3f {
     }
 
     pub fn normalize(&self) -> Self {
-        let len = self.mag();
+        self.with_length(1.0)
+    }
+
+    pub fn with_length(&self, len: f64) -> Self {
+        let scalar = len / self.mag();
         Self {
-            x: self.x / len,
-            y: self.y / len,
-            z: self.z / len,
+            x: self.x * scalar,
+            y: self.y * scalar,
+            z: self.z * scalar,
         }
     }
 
