@@ -100,8 +100,8 @@ pub fn rasterize(buf: &mut SubBuffer, tri: &Triangle, occ: &[Triangle], u: &Unif
                 swap(&mut start_x, &mut end_x);
             }
 
-            start_x = start_x.clamp(0, dims.0 - 1);
-            end_x = end_x.clamp(0, dims.0 - 1);
+            start_x = start_x.clamp(0, dims.0);
+            end_x = end_x.clamp(0, dims.0);
             for x in start_x..end_x {
                 // localize the index into the sub buffer to the current chunk
                 let i = (y - buf.start_y) * dims.0 + x;
@@ -376,7 +376,6 @@ fn calc_lighting(norm: &Vec3f, pix_pos: &Point3d, u: &Uniforms, occ: &[Triangle]
     let diffuse_theta = Vec3f::dot(norm, &light_dir).max(0.0);
     let diffuse = diffuse_theta * u.diffuse;
 
-    // our cam is always at the origin, so view dir is just the pixel pos (cam to pixel)
     let view_dir = (pix_pos.into_vec() - u.cam_pos.into_vec()).normalize();
     let reflected = reflect(&light_dir.inv(), norm);
     let specular = Vec3f::dot(&view_dir.inv(), &reflected).max(0.0).powi(u.shininess as i32) * u.specular;

@@ -160,21 +160,17 @@ fn start_interactive(config: Config<'static>) {
 
                 // rasterize
                 let chunk_size_y = config.height / config.render_threads;
-                let mut color_chunks = buf.color.chunks_mut((chunk_size_y * dims.0) as usize * COLOR_BUF_CHANNELS);
-                let mut depth_chunks = buf.depth.chunks_mut((chunk_size_y * dims.0) as usize);
+                let color_chunks = buf.color.chunks_mut((chunk_size_y * dims.0) as usize * COLOR_BUF_CHANNELS);
+                let depth_chunks = buf.depth.chunks_mut((chunk_size_y * dims.0) as usize);
 
                 pool.scoped(|spawner| {
-                    for i in 0..config.render_threads {
-                        // obtain current chunks
-                        let color = color_chunks.next().unwrap();
-                        let depth = depth_chunks.next().unwrap();
-
+                    for (i, (color, depth)) in color_chunks.zip(depth_chunks).enumerate() {
                         let chunk_height = depth.len() as u32 / dims.0;
                         let mut sub_buf = SubBuffer {
                             color,
                             depth,
                             dims: (dims.0, chunk_height), // all chunks are the same width, but not neccassarily the same height
-                            start_y: i * chunk_size_y,
+                            start_y: i as u32 * chunk_size_y,
                         };
 
                         let processed_tris = processed_tris.as_ref();
