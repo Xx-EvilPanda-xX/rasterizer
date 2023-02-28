@@ -19,7 +19,7 @@ impl Camera {
         z: 0.0,
     };
 
-    const WALK_SPEED: f64 = 100.0;
+    const WALK_SPEED: f64 = 5.0;
     const SENS: f64 = 0.075;
 
     pub fn new(
@@ -39,7 +39,7 @@ impl Camera {
 
     pub fn update_pos(&mut self, dt: f64, input: &WinitInputHelper) {
         self.update_acc(input);
-        self.update_vel(dt);
+        self.update_vel();
         self.update_loc(dt);
     }
 
@@ -52,7 +52,7 @@ impl Camera {
         self.loc.z += s * v.z * dt;
     }
 
-    fn update_vel(&mut self, dt: f64) {
+    fn update_vel(&mut self) {
         let forward = Vec3f {
             x: self.yaw.to_radians().sin() * self.pitch.to_radians().cos(),
             y: self.pitch.to_radians().sin(),
@@ -63,9 +63,9 @@ impl Camera {
         let forward = Vec3f::new(forward.x, 0.0, forward.z).normalize();
         let right = Vec3f::new(right.x, 0.0, right.z).normalize();
 
-        self.vel.x = (self.acc.z * forward.x * dt) + (self.acc.x * right.x * dt);
-        self.vel.y = self.acc.y * dt;
-        self.vel.z = (self.acc.z * forward.z * dt) + (self.acc.x * right.z * dt);
+        self.vel.x = (self.acc.z * forward.x) + (self.acc.x * right.x);
+        self.vel.y = self.acc.y;
+        self.vel.z = (self.acc.z * forward.z) + (self.acc.x * right.z);
     }
 
     fn update_acc(&mut self, input: &WinitInputHelper) {

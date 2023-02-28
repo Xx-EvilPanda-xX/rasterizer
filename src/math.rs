@@ -1,7 +1,7 @@
 use std::fmt::{Display, Formatter};
 use std::ops::{Index, IndexMut, Sub, Add};
 
-const MU: f64 = 0.0000001;
+pub const MU: f64 = 0.0000001;
 
 // `p` is assumed to lie on the same plane as `tri`
 pub fn point_in_tri(p: &Point3d, tri: [&Point3d; 3], ab: &Vec3f, ba: &Vec3f, ac: &Vec3f, bc: &Vec3f) -> bool {
@@ -131,6 +131,14 @@ pub fn line_3d_from_points(p1: &Point3d, p2: &Point3d) -> Line3d {
     }
 }
 
+pub fn solve_line_3d_z(l: &Line3d, z: f64) -> Point3d {
+    let line_y = Line2d { m: l.m_y, b: l.b_y };
+    let line_z = Line2d { m: l.m_z, b: l.b_z };
+    let x = solve_x(&line_z, z);
+    let y = solve_y(&line_y, x);
+    Point3d::new(x, y, z)
+}
+
 // checks whether `between` is between p1 and p2 (assumes all inputs are colinear)
 pub fn is_point_between(p1: &Point3d, p2: &Point3d, between: &Point3d) -> bool {
     // small correction term to prevent floating point precision errors (negated to prefer returning false when its close)
@@ -179,9 +187,9 @@ pub fn plane_from_points(p1: &Point3d, p2: &Point3d, p3: &Point3d, solve_type: P
 // check if a plane can be solved with its current solve type
 fn check_solve_type(plane: &Plane) -> bool {
     match plane.solve_type {
-        PlaneSolveType::X => plane.a != 0.0,
-        PlaneSolveType::Y => plane.b != 0.0,
-        PlaneSolveType::Z => plane.c != 0.0,
+        PlaneSolveType::X => check_not_zero(plane.a),
+        PlaneSolveType::Y => check_not_zero(plane.b),
+        PlaneSolveType::Z => check_not_zero(plane.c),
     }
 }
 
@@ -207,6 +215,10 @@ pub fn solve_lines(l1: &Line2d, l2: &Line2d) -> Point2d {
 }
 
 pub fn solve_x(l: &Line2d, y: f64) -> f64 {
+    if l.b.is_infinite() {
+        return l.m;
+    }
+
     (y - l.b) / l.m
 }
 
@@ -331,7 +343,12 @@ pub fn get_perspective(fov: f64, aspect: f64, n: f64, f: f64) -> Perspective {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+// floating point equality check to account for lost precision
+fn check_not_zero(x: f64) -> bool {
+    x > MU || x < -MU
+}
+
+#[derive(Clone, Copy, Debug, Default)]
 pub struct Point3d {
     pub x: f64,
     pub y: f64,
@@ -435,9 +452,30 @@ impl Mat4f {
 
     // Gauss-Jordan Method
     pub fn inverse(&self) -> Self {
+        // elementary row operations
+        fn swap_rows(r1: usize, r2: usize, mat: &mut [[f64; 8]; 4]) {
+            for i in 0..8 {
+                let tmp = mat[r1][i];
+                mat[r1][i] = mat[r2][i];
+                mat[r2][i] = tmp;
+            }
+        }
+
+        fn mul_row_scalar(row: usize, scalar: f64, mat: &mut [[f64; 8]; 4]) {
+            for i in 0..8 {
+                mat[row][i] *= scalar;
+            }
+        }
+
+        fn combine_rows(src_row: usize, dst_row: usize, scalar: f64, mat: &mut [[f64; 8]; 4]) {
+            for i in 0..8 {
+                mat[dst_row][i] += mat[src_row][i] * scalar;
+            }
+        }
+
         let mut aug_mat = [[0.0; 8]; 4];
 
-        // augment an identity matrix onto the end of the matrix
+        // copy matrix and augment an identity matrix onto the end
         for i in 0..4 {
             for j in 0..4 {
                 aug_mat[i][j] = self[i][j];
@@ -445,21 +483,37 @@ impl Mat4f {
             aug_mat[i][i + 4] = 1.0;
         }
 
+        // reduce each column
         for i in 0..4 {
-            for j in 0..4 {
-                if j != i {
-                    let div = aug_mat[j][i] / aug_mat[i][i];
-                    for k in 0..8 {
-                        aug_mat[j][k] -= aug_mat[i][k] * div;
+            // ensure a non zero value on top
+            'outer: for j in 0..4 {
+                // check if current row in the currnet column is non zero
+                if check_not_zero(aug_mat[j][i]) {
+                    // ensure all other values to the right of this value are zero
+                    for k in 0..i {
+                        if check_not_zero(aug_mat[j][k]) {
+                            continue 'outer;
+                        }
                     }
+                    swap_rows(j, 0, &mut aug_mat);
+                    break;
                 }
+            }
+
+            // set the first row of the current column to one
+            mul_row_scalar(0, 1.0 / aug_mat[0][i], &mut aug_mat);
+            // set the rest of the rows in the column to zero
+            for j in 1..4 {
+                combine_rows(0, j, -aug_mat[j][i], &mut aug_mat);
             }
         }
 
+        // finally, put the ones in the rights spots so the matrix is an identity matrix
         for i in 0..4 {
-            let diag = aug_mat[i][i];
-            for j in 0..8 {
-                aug_mat[i][j] /= diag;
+            for j in 0..4 {
+                if check_not_zero(aug_mat[i][j]) {
+                    swap_rows(i, j, &mut aug_mat);
+                }
             }
         }
 

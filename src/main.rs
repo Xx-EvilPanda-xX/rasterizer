@@ -3,6 +3,7 @@ use camera::Camera;
 use image::{RgbImage, RgbaImage};
 use math::*;
 use config::Config;
+use renderer::Clip;
 use winit::{event_loop::{ControlFlow, EventLoop}, window::WindowBuilder, dpi::{LogicalSize, PhysicalPosition}, event::{Event, VirtualKeyCode, DeviceEvent}};
 use winit_input_helper::WinitInputHelper;
 use pixels::{Pixels, SurfaceTexture};
@@ -92,12 +93,13 @@ fn parse_args(args: &[String]) -> HashMap<String, String> {
     out
 }
 
-fn start_interactive(config: Config<'static>) {
+fn start_interactive(mut config: Config<'static>) {
     let event_loop = EventLoop::new();
     let mut input = WinitInputHelper::new();
     let size = LogicalSize::new(config.width as f64, config.height as f64);
     let window = WindowBuilder::new()
         .with_title("Renderer")
+        .with_position(PhysicalPosition::new(50, 50))
         .with_inner_size(size)
         .with_min_inner_size(size)
         .build(&event_loop)
@@ -143,6 +145,7 @@ fn start_interactive(config: Config<'static>) {
                     proj,
                     inv_view: view.inverse(),
                     inv_proj: proj.inverse(),
+                    near_clipping_plane: config.n,
                     light_pos: config.light_pos,
                     cam_pos: camera.loc,
                     ambient: config.ambient,
@@ -177,8 +180,13 @@ fn start_interactive(config: Config<'static>) {
                         let uniforms = &uniforms;
                         spawner.execute(move || {
                             for tri in processed_tris {
-                                if tri.clipped {
-                                    continue;
+                                match &tri.clip {
+                                    Clip::Zero => {},
+                                    Clip::One(second_triangle) => {
+                                        renderer::rasterize(&mut sub_buf, &second_triangle, processed_tris, uniforms);
+                                    }
+                                    Clip::Two => {}, // the clipped triangle has replaced the original, we can continue normally
+                                    Clip::Three => continue,
                                 }
 
                                 renderer::rasterize(&mut sub_buf, tri, processed_tris, uniforms);
@@ -190,7 +198,7 @@ fn start_interactive(config: Config<'static>) {
 
                 // present
                 let pixels = frame_buffer.get_frame_mut();
-                flip_and_copy(&mut buf, pixels, dims);
+                flip_and_copy(&buf, pixels, dims);
 
                 if let Err(e) = frame_buffer.render() {
                     println!("{}", e);
@@ -225,6 +233,9 @@ fn start_interactive(config: Config<'static>) {
                     *control_flow = ControlFlow::Exit;
                 }
             }
+
+            const ROT_SPEED: f64 = 3.0;
+            config.rot_y += dt * ROT_SPEED;
 
             camera.update_pos(dt, &input);
             window.request_redraw();
@@ -288,6 +299,7 @@ fn render_to_image(config: &Config, save_name: &str) {
         proj,
         inv_view: view.inverse(),
         inv_proj: proj.inverse(),
+        near_clipping_plane: config.n,
         light_pos: config.light_pos,
         cam_pos: Point3d::origin(),
         ambient: config.ambient,
@@ -350,8 +362,13 @@ fn render_to_image(config: &Config, save_name: &str) {
                         );
                     }
 
-                    if tri.clipped {
-                        continue;
+                    match &tri.clip {
+                        Clip::Zero => {},
+                        Clip::One(second_triangle) => {
+                            pixels_shaded += renderer::rasterize(&mut sub_buf, &second_triangle, processed_tris, uniforms);
+                        }
+                        Clip::Two => {},
+                        Clip::Three => continue,
                     }
 
                     pixels_shaded += renderer::rasterize(&mut sub_buf, tri, processed_tris, uniforms);
@@ -503,7 +520,7 @@ fn vertex_shader_pass<'a>(
     assert_eq!(tris.len(), processed_tris.len());
 
     if let Some(pool) = pool {
-        let chunk_size = tris.len() / threads as usize;
+        let chunk_size = (tris.len() / threads as usize).max(1);
         pool.scoped(|spawner| {
             let chunks = tris.chunks(chunk_size);
             let p_chunks = processed_tris.chunks_mut(chunk_size);
@@ -528,6 +545,14 @@ fn vertex_shader_pass<'a>(
         processed.ba = (processed.a.pos_world.into_vec() - processed.b.pos_world.into_vec()).normalize();
         processed.ac = (processed.c.pos_world.into_vec() - processed.a.pos_world.into_vec()).normalize();
         processed.bc = (processed.c.pos_world.into_vec() - processed.b.pos_world.into_vec()).normalize();
+
+        if let Clip::One(tri) = &mut processed.clip {
+            renderer::sort_tri_points_y(tri);
+            tri.ab = (tri.b.pos_world.into_vec() - tri.a.pos_world.into_vec()).normalize();
+            tri.ba = (tri.a.pos_world.into_vec() - tri.b.pos_world.into_vec()).normalize();
+            tri.ac = (tri.c.pos_world.into_vec() - tri.a.pos_world.into_vec()).normalize();
+            tri.bc = (tri.c.pos_world.into_vec() - tri.b.pos_world.into_vec()).normalize();
+        }
 
         *processed_tri = processed;
     }

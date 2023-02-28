@@ -4,7 +4,7 @@ use core::fmt::Debug;
 use image::RgbaImage;
 
 use crate::MtlData;
-use crate::renderer::{Triangle, Vertex};
+use crate::renderer::{Triangle, Vertex, Clip};
 use crate::math::{Point3d, Vec3f};
 
 pub struct Config<'a> {
@@ -162,7 +162,7 @@ impl<'a> Triangle<'a> {
                 tex: [0.0, 0.0],
             },
             tex: None,
-            clipped: false,
+            clip: Clip::Zero,
             ab: Vec3f::default(),
             ba: Vec3f::default(),
             ac: Vec3f::default(),
@@ -405,7 +405,7 @@ fn load_obj<'a>(obj: &str, mtls: &'a HashMap<String, MtlData>, color_freq: f64, 
             },
             tex: None,
             // these values are intitalized in the vertex shader
-            clipped: false,
+            clip: Clip::Zero,
             ab: Vec3f::default(),
             ba: Vec3f::default(),
             ac: Vec3f::default(),

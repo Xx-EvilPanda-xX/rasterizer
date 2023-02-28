@@ -8,7 +8,7 @@ pub struct Triangle<'a> {
     pub b: Vertex,
     pub c: Vertex,
     pub tex: Option<&'a RgbaImage>,
-    pub clipped: bool,
+    pub clip: Clip<'a>,
 
     // directions of each vertex to every other vertex (used for point_in_tri())
     pub ab: Vec3f,
@@ -17,7 +17,7 @@ pub struct Triangle<'a> {
     pub bc: Vec3f,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct Vertex {
     pub pos: Point3d, // x and y are in screen space for rasterization, z is still in clip space
     pub pos_world: Point3d,
@@ -25,6 +25,22 @@ pub struct Vertex {
     pub color: [u8; 3],
     pub n: Vec3f,
     pub tex: [f64; 2],
+}
+
+#[derive(Clone, Debug)]
+pub enum Clip<'a> {
+    Zero,
+    // when only one vertex triangle is clipped, two triangles need to be created. One will be stored in this box and one in the containing triangle.
+    One(Box<Triangle<'a>>),
+    Two,
+    Three,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum ClipLerp {
+    AB,
+    AC,
+    BC
 }
 
 pub struct AttributePlanes {
@@ -47,6 +63,7 @@ pub struct Uniforms {
     pub proj: Mat4f,
     pub inv_view: Mat4f,
     pub inv_proj: Mat4f,
+    pub near_clipping_plane: f64,
     pub light_pos: Point3d,
     pub cam_pos: Point3d,
     pub ambient: f64,
@@ -214,59 +231,251 @@ pub fn vertex_shader<'a>(tri: &Triangle<'a>, u: &Uniforms, dims: (u32, u32)) -> 
     pos_b = mul_point_matrix(&pos_b, &u.view);
     pos_c = mul_point_matrix(&pos_c, &u.view);
 
-    let mut clipped = false;
-    // primitive implementation of clipping (so z < 0 for perspective division, otherwise weird stuff unfolds)
-    if (pos_a.z >= 0.0 || pos_b.z >= 0.0 || pos_c.z >= 0.0) && !u.legacy {
-        // triangle (at least one vertex) was clipped, we cannot render it
-        clipped = true;
+    // here we create vertices just for clipping (we might need to interpolate between attributes)
+    // anything in clip space is left unused, but pos is used to store the view space position (clipping is done in view space)
+    let v_a = Vertex {
+        pos: pos_a,
+        pos_world: pos_world_a,
+        color: a.color,
+        n: n_a,
+        tex: a.tex,
+        ..Default::default()
+    };
+    let v_b = Vertex {
+        pos: pos_b,
+        pos_world: pos_world_b,
+        color: b.color,
+        n: n_b,
+        tex: b.tex,
+        ..Default::default()
+    };
+    let v_c = Vertex {
+        pos: pos_c,
+        pos_world: pos_world_c,
+        color: c.color,
+        n: n_c,
+        tex: c.tex,
+        ..Default::default()
+    };
+
+    let clip_dist = u.near_clipping_plane;
+    let (num_clipped, clipped_points, non_clipped_points) = get_clipped(&v_a, &v_b, &v_c, -clip_dist);
+    // if Some, holds one of the new tris from clipping, to replace the original triangle
+    let mut tri_override = None;
+
+    let mut clip = match num_clipped {
+        0 => {
+            Clip::Zero
+        }
+        1 => {
+            let a = &non_clipped_points[0];
+            let b = &non_clipped_points[1];
+            // gaurantee c to the only clipped vertex
+            let c = &clipped_points[0];
+
+            // NOTE: maybe use rays here intead of lines?
+            let line1 = line_3d_from_points(&a.pos, &c.pos);
+            let line2 = line_3d_from_points(&b.pos, &c.pos);
+            // solve for the points where our triangle is barely not clippable
+            let inter1 = solve_line_3d_z(&line1, -clip_dist);
+            let inter2 = solve_line_3d_z(&line2, -clip_dist);
+
+            // find the factor by which to lerp attribs in the newly found points
+            let lerp_val_b = dist_3d(&a.pos, &inter1).sqrt() / dist_3d(&a.pos, &c.pos).sqrt();
+            let lerp_val_c = dist_3d(&b.pos, &inter2).sqrt() / dist_3d(&b.pos, &c.pos).sqrt();
+
+            // 1st new triangle
+            tri_override = Some(make_clipped_triangle(a, b, c, tri.tex, &[a, b], &[(&inter2, lerp_val_c, ClipLerp::BC)], &u.inv_view));
+            Clip::One(
+                Box::new(
+                    // 2nd new triangle
+                    make_clipped_triangle(a, b, c, tri.tex, &[a], &[(&inter1, lerp_val_b, ClipLerp::AC), (&inter2, lerp_val_c, ClipLerp::BC)], &u.inv_view)
+                )
+            )
+        }
+        2 => {
+            // guarantee a to be the only non clipped vertex
+            let a = &non_clipped_points[0];
+            let b = &clipped_points[0];
+            let c = &clipped_points[1];
+
+            let line1 = line_3d_from_points(&a.pos, &b.pos);
+            let line2 = line_3d_from_points(&a.pos, &c.pos);
+            let inter1 = solve_line_3d_z(&line1, -clip_dist);
+            let inter2 = solve_line_3d_z(&line2, -clip_dist);
+
+            let lerp_val_b = dist_3d(&a.pos, &inter1).sqrt() / dist_3d(&a.pos, &b.pos).sqrt();
+            let lerp_val_c = dist_3d(&a.pos, &inter2).sqrt() / dist_3d(&a.pos, &c.pos).sqrt();
+
+            // only new triangle
+            tri_override = Some(make_clipped_triangle(a, b, c, tri.tex, &[a], &[(&inter1, lerp_val_b, ClipLerp::AB), (&inter2, lerp_val_c, ClipLerp::AC)], &u.inv_view));
+            Clip::Two
+        }
+        3 => {
+            Clip::Three
+        }
+        _ => unreachable!()
+    };
+
+    // in the case of an override, we already have a half contructed triangle and simply need to complete it
+    if let Some(mut tri) = tri_override {
+        // do the same clip/raster space calculations for the clip override if it exsists (and the optional newly boxed triangle), then return it
+        clip_space_calc(tri.a.pos, &mut tri.a.pos, &mut tri.a.pos_clip, &u.proj, dims);
+        clip_space_calc(tri.b.pos, &mut tri.b.pos, &mut tri.b.pos_clip, &u.proj, dims);
+        clip_space_calc(tri.c.pos, &mut tri.c.pos, &mut tri.c.pos_clip, &u.proj, dims);
+
+        if let Clip::One(tri) = &mut clip {
+            clip_space_calc(tri.a.pos, &mut tri.a.pos, &mut tri.a.pos_clip, &u.proj, dims);
+            clip_space_calc(tri.b.pos, &mut tri.b.pos, &mut tri.b.pos_clip, &u.proj, dims);
+            clip_space_calc(tri.c.pos, &mut tri.c.pos, &mut tri.c.pos_clip, &u.proj, dims);
+        }
+
+        tri.clip = clip;
+        tri
+    } else {
+        let mut pos_clip_a = Point3d::default();
+        let mut pos_clip_b = Point3d::default();
+        let mut pos_clip_c = Point3d::default();
+
+        clip_space_calc(pos_a, &mut pos_a, &mut pos_clip_a, &u.proj, dims);
+        clip_space_calc(pos_b, &mut pos_b, &mut pos_clip_b, &u.proj, dims);
+        clip_space_calc(pos_c, &mut pos_c, &mut pos_clip_c, &u.proj, dims);
+
+        Triangle {
+            a: Vertex {
+                pos: pos_a,
+                pos_world: pos_world_a,
+                pos_clip: pos_clip_a,
+                color: a.color,
+                n: n_a,
+                tex: a.tex,
+            },
+            b: Vertex {
+                pos: pos_b,
+                pos_world: pos_world_b,
+                pos_clip: pos_clip_b,
+                color: b.color,
+                n: n_b,
+                tex: b.tex,
+            },
+            c: Vertex {
+                pos: pos_c,
+                pos_world: pos_world_c,
+                pos_clip: pos_clip_c,
+                color: c.color,
+                n: n_c,
+                tex: c.tex,
+            },
+            tex: tri.tex,
+            clip,
+            // these are initialized outside of vertex shader to avoid conflicts with vertex sorting
+            ab: Vec3f::default(),
+            ba: Vec3f::default(),
+            ac: Vec3f::default(),
+            bc: Vec3f::default(),
+        }
+    }
+}
+
+fn clip_space_calc(pos_view: Point3d, pos: &mut Point3d, pos_clip: &mut Point3d, proj: &Mat4f, dims: (u32, u32)) {
+    // projection transform
+    *pos = mul_point_matrix(&pos_view, proj);
+    // save clip space position
+    *pos_clip = *pos;
+    // normalize to 0 to 1 and scale to raster space
+    pos.x = (pos.x + 1.0) / 2.0 * dims.0 as f64;
+    pos.y = (pos.y + 1.0) / 2.0 * dims.1 as f64;
+}
+
+// find the vertices in a triangle that need to be clipped or not and retain their respective attrib info
+fn get_clipped(a: &Vertex, b: &Vertex, c: &Vertex, clip_dist: f64) -> (usize, [Vertex; 3], [Vertex; 3]) {
+    let mut num_clipped = 0;
+    let mut num_non_clipped = 0;
+    let mut clipped_points = [Vertex::default(); 3];
+    let mut non_clipped_points = [Vertex::default(); 3];
+    let points = [a, b, c];
+
+    for p in points {
+        if p.pos.z >= clip_dist {
+            clipped_points[num_clipped] = *p;
+            num_clipped += 1;
+        } else {
+            non_clipped_points[num_non_clipped] = *p;
+            num_non_clipped += 1;
+        };
     }
 
-    // projection transform
-    pos_a = mul_point_matrix(&pos_a, &u.proj);
-    pos_b = mul_point_matrix(&pos_b, &u.proj);
-    pos_c = mul_point_matrix(&pos_c, &u.proj);
+    (num_clipped, clipped_points, non_clipped_points)
+}
 
-    // save clip space position
-    let pos_clip_a = pos_a;
-    let pos_clip_b = pos_b;
-    let pos_clip_c = pos_c;
+// a, b, c are the orignal points of our triangle
+// non_clipped is a slice of all the non clipped vertices we want in our newly constructed triangle
+// clipped is slice of all the new points made by intersecting with the xy plane
+fn make_clipped_triangle<'a>(
+    a: &Vertex,
+    b: &Vertex,
+    c: &Vertex,
+    tex: Option<&'a RgbaImage>,
+    non_clipped: &[&Vertex],
+    // (the clipped point, lerp value, lerp type)
+    clipped: &[(&Point3d, f64, ClipLerp)],
+    inv_view: &Mat4f,
+) -> Triangle<'a> {
+    assert_eq!(non_clipped.len() + clipped.len(), 3);
+    assert_ne!(non_clipped.len(), 0);
+    assert_ne!(clipped.len(), 0);
 
-    // normalize to 0 to 1 and scale to raster space
-    pos_a.x = (pos_a.x + 1.0) / 2.0 * dims.0 as f64;
-    pos_b.x = (pos_b.x + 1.0) / 2.0 * dims.0 as f64;
-    pos_c.x = (pos_c.x + 1.0) / 2.0 * dims.0 as f64;
-    pos_a.y = (pos_a.y + 1.0) / 2.0 * dims.1 as f64;
-    pos_b.y = (pos_b.y + 1.0) / 2.0 * dims.1 as f64;
-    pos_c.y = (pos_c.y + 1.0) / 2.0 * dims.1 as f64;
+    let mut out = [Vertex::default(); 3];
+    let mut idx = 0;
+
+    for &v in non_clipped {
+        out[idx] = *v;
+        idx += 1;
+    }
+
+    for &(&pos, lerp_val, lerp_type) in clipped {
+        let (v1, v2) = match lerp_type {
+            ClipLerp::AB => (a, b),
+            ClipLerp::AC => (a, c),
+            ClipLerp::BC => (b, c),
+        };
+
+        let color = [
+            lerp(v1.color[0] as f64, v2.color[0] as f64, lerp_val) as u8,
+            lerp(v1.color[1] as f64, v2.color[1] as f64, lerp_val) as u8,
+            lerp(v1.color[2] as f64, v2.color[2] as f64, lerp_val) as u8,
+        ];
+
+        let n = Vec3f::new(
+            lerp(v1.n.x, v2.n.x, lerp_val),
+            lerp(v1.n.y, v2.n.y, lerp_val),
+            lerp(v1.n.z, v2.n.z, lerp_val),
+        );
+
+        let tex = [
+            lerp(v1.tex[0], v2.tex[0], lerp_val),
+            lerp(v1.tex[1], v2.tex[1], lerp_val)
+        ];
+
+        let pos_world = mul_point_matrix(&pos, inv_view);
+        out[idx] = Vertex {
+            pos,
+            pos_world,
+            color,
+            n,
+            tex,
+            ..Default::default()
+        };
+
+        idx += 1;
+    }
 
     Triangle {
-        a: Vertex {
-            pos: pos_a,
-            pos_world: pos_world_a,
-            pos_clip: pos_clip_a,
-            color: a.color,
-            n: n_a,
-            tex: a.tex,
-        },
-        b: Vertex {
-            pos: pos_b,
-            pos_world: pos_world_b,
-            pos_clip: pos_clip_b,
-            color: b.color,
-            n: n_b,
-            tex: b.tex,
-        },
-        c: Vertex {
-            pos: pos_c,
-            pos_world: pos_world_c,
-            pos_clip: pos_clip_c,
-            color: c.color,
-            n: n_c,
-            tex: c.tex,
-        },
-        tex: tri.tex,
-        clipped,
-        // these are initialized outside of vertex shader to avoid conflicts with vertex sorting
+        a: out[0],
+        b: out[1],
+        c: out[2],
+        tex,
+        clip: Clip::Zero, // this functions purpose is to contruct a triangle THAT HAS ALREADY been clipped
         ab: Vec3f::default(),
         ba: Vec3f::default(),
         ac: Vec3f::default(),
@@ -296,8 +505,9 @@ dimensions and solve for w from a know x, y, and z, which im definetly not gonna
 
 fn pixel_shader(tri: &Triangle, occ: &[Triangle], u: &Uniforms, planes: &AttributePlanes, x: u32, y: u32) -> [u8; 4] {
     let (x, y) = (x as f64, y as f64);
+    const SPEC_COLOR: [u8; 4] = [255, 255, 255, 255];
 
-    if INTERPOLATE_FAST {
+    let (norm, pix_world_pos, base_color) = if INTERPOLATE_FAST {
         // position of our pixel in clip space
         let pix_clip_pos = Point3d::new(
             lerp_fast(&planes.pos_x, x, y, 0.0),
@@ -330,8 +540,7 @@ fn pixel_shader(tri: &Triangle, occ: &[Triangle], u: &Uniforms, planes: &Attribu
             FULLY_OPAQUE]
         };
 
-        let color = mul_color(&base_color, calc_lighting(&norm, &pix_world_pos, u, occ));
-        color
+        (norm, pix_world_pos, base_color)
     } else {
         let weights_clip = lerp_slow([&tri.a.pos, &tri.b.pos, &tri.c.pos], x, y);
         let pix_clip_pos = Point3d::new(
@@ -363,12 +572,20 @@ fn pixel_shader(tri: &Triangle, occ: &[Triangle], u: &Uniforms, planes: &Attribu
             tri.a.n.z * weights_world.a + tri.b.n.z * weights_world.b + tri.c.n.z * weights_world.c,
         );
 
-        let color = mul_color(&base_color, calc_lighting(&norm, &pix_world_pos, u, occ));
-        color
-    }
+        (norm, pix_world_pos, base_color)
+    };
+
+    let (ambient, diffuse, specular) = calc_lighting(&norm, &pix_world_pos, u, occ);
+    let ambient = mul_color(&base_color, ambient);
+    let diffuse = mul_color(&base_color, diffuse);
+    let specular = mul_color(&SPEC_COLOR, specular);
+    let mut color = add_color(&ambient, &diffuse);
+    color = add_color(&color, &specular);
+    color[3] = base_color[3];
+    color
 }
 
-fn calc_lighting(norm: &Vec3f, pix_pos: &Point3d, u: &Uniforms, occ: &[Triangle]) -> f64 {
+fn calc_lighting(norm: &Vec3f, pix_pos: &Point3d, u: &Uniforms, occ: &[Triangle]) -> (f64, f64, f64) {
     // pixel to light
     let light_dir = (u.light_pos.into_vec() - pix_pos.into_vec()).normalize();
 
@@ -386,7 +603,7 @@ fn calc_lighting(norm: &Vec3f, pix_pos: &Point3d, u: &Uniforms, occ: &[Triangle]
         1.0
     };
 
-    ambient + (diffuse + specular) * shadow
+    (ambient, diffuse * shadow, specular * shadow)
 }
 
 fn shadow(occ: &[Triangle], light_pos: &Point3d, pix_pos: &Point3d) -> f64 {
@@ -488,6 +705,13 @@ fn lerp_color(c1: &[u8; 4], c2: &[u8; 4], x: f64) -> [u8; 4] {
     lerp(c1[1] as f64, c2[1] as f64, x) as u8,
     lerp(c1[2] as f64, c2[2] as f64, x) as u8,
     lerp(c1[3] as f64, c2[3] as f64, x) as u8]
+}
+
+fn add_color(c1: &[u8; 4], c2: &[u8; 4]) -> [u8; 4] {
+    [c1[0].saturating_add(c2[0]),
+    c1[1].saturating_add(c2[1]),
+    c1[2].saturating_add(c2[2]),
+    c1[3].saturating_add(c2[3])]
 }
 
 fn mul_color(color: &[u8; 4], x: f64) -> [u8; 4] {
