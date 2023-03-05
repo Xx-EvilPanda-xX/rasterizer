@@ -273,12 +273,11 @@ pub fn vertex_shader<'a>(tri: &Triangle<'a>, u: &Uniforms, dims: (u32, u32)) -> 
             // gaurantee c to the only clipped vertex
             let c = &clipped_points[0];
 
-            // NOTE: maybe use rays here intead of lines?
-            let line1 = line_3d_from_points(&a.pos, &c.pos);
-            let line2 = line_3d_from_points(&b.pos, &c.pos);
+            let ray1 = ray_3d_from_points(&a.pos, &c.pos);
+            let ray2 = ray_3d_from_points(&b.pos, &c.pos);
             // solve for the points where our triangle is barely not clippable
-            let inter1 = solve_line_3d_z(&line1, -clip_dist);
-            let inter2 = solve_line_3d_z(&line2, -clip_dist);
+            let inter1 = solve_ray_3d_z(&ray1, -clip_dist);
+            let inter2 = solve_ray_3d_z(&ray2, -clip_dist);
 
             // find the factor by which to lerp attribs in the newly found points
             let lerp_val_b = dist_3d(&a.pos, &inter1).sqrt() / dist_3d(&a.pos, &c.pos).sqrt();
@@ -299,10 +298,10 @@ pub fn vertex_shader<'a>(tri: &Triangle<'a>, u: &Uniforms, dims: (u32, u32)) -> 
             let b = &clipped_points[0];
             let c = &clipped_points[1];
 
-            let line1 = line_3d_from_points(&a.pos, &b.pos);
-            let line2 = line_3d_from_points(&a.pos, &c.pos);
-            let inter1 = solve_line_3d_z(&line1, -clip_dist);
-            let inter2 = solve_line_3d_z(&line2, -clip_dist);
+            let ray1 = ray_3d_from_points(&a.pos, &b.pos);
+            let ray2 = ray_3d_from_points(&a.pos, &c.pos);
+            let inter1 = solve_ray_3d_z(&ray1, -clip_dist);
+            let inter2 = solve_ray_3d_z(&ray2, -clip_dist);
 
             let lerp_val_b = dist_3d(&a.pos, &inter1).sqrt() / dist_3d(&a.pos, &b.pos).sqrt();
             let lerp_val_c = dist_3d(&a.pos, &inter2).sqrt() / dist_3d(&a.pos, &c.pos).sqrt();
@@ -665,26 +664,11 @@ fn tex_sample(tex: &RgbaImage, x: f64, y: f64, sample_lerp: bool) -> [u8; 4] {
         let t_xy = (x as u32 + 1, y as u32 + 1);
 
         // the four texels we care about
-        let this = if t.0 < tex.width() && t.1 < tex.height() {
-            tex.get_pixel(t.0, t.1).0
-        } else {
-            [0; 4]
-        };
-        let this_x = if t_x.0 < tex.width() && t_x.1 < tex.height() {
-            tex.get_pixel(t_x.0, t_x.1).0
-        } else {
-            [0; 4]
-        };
-        let this_y = if t_y.0 < tex.width() && t_y.1 < tex.height() {
-            tex.get_pixel(t_y.0, t_y.1).0
-        } else {
-            [0; 4]
-        };
-        let this_xy = if t_xy.0 < tex.width() && t_xy.1 < tex.height() {
-            tex.get_pixel(t_xy.0, t_xy.1).0
-        } else {
-            [0; 4]
-        };
+        const BLACK: image::Rgba<u8> = image::Rgba([0; 4]);
+        let this = tex.get_pixel_checked(t.0, t.1).unwrap_or(&BLACK).0;
+        let this_x = tex.get_pixel_checked(t_x.0, t_x.1).unwrap_or(&BLACK).0;
+        let this_y = tex.get_pixel_checked(t_y.0, t_y.1).unwrap_or(&BLACK).0;
+        let this_xy = tex.get_pixel_checked(t_xy.0, t_xy.1).unwrap_or(&BLACK).0;
 
         // how close our pixel to the bounds of the texel
         let dx = 1.0 - ((x + 1.0).trunc() - x);

@@ -1,4 +1,4 @@
-use std::{io::BufReader, fs::File, collections::HashMap, time::Instant};
+use std::{io::BufReader, fs::File, collections::HashMap, time::Instant, sync::Mutex};
 use camera::Camera;
 use image::{RgbImage, RgbaImage};
 use math::*;
@@ -327,24 +327,22 @@ fn render_to_image(config: &Config, save_name: &str) {
 
     // rows per chunk (except maybe last chunk)
     let chunk_size_y = config.height / config.render_threads;
-    let mut color_chunks = buf.color.chunks_mut((chunk_size_y * dims.0) as usize * COLOR_BUF_CHANNELS);
-    let mut depth_chunks = buf.depth.chunks_mut((chunk_size_y * dims.0) as usize);
+    let color_chunks = buf.color.chunks_mut((chunk_size_y * dims.0) as usize * COLOR_BUF_CHANNELS);
+    let depth_chunks = buf.depth.chunks_mut((chunk_size_y * dims.0) as usize);
+    let threads_left: Mutex<Vec<_>> = Mutex::new((0..config.render_threads + if config.height % config.render_threads == 0 { 0 } else  { 1 }).collect());
 
     let start = Instant::now();
     std::thread::scope(|spawner| {
-        for i in 0..config.render_threads {
-            // obtain current chunks
-            let color = color_chunks.next().unwrap();
-            let depth = depth_chunks.next().unwrap();
-
+        for (i, (color, depth)) in color_chunks.zip(depth_chunks).enumerate() {
             let chunk_height = depth.len() as u32 / dims.0;
             let mut sub_buf = SubBuffer {
                 color,
                 depth,
                 dims: (dims.0, chunk_height), // all chunks are the same width, but not neccassarily the same height
-                start_y: i * chunk_size_y,
+                start_y: i as u32 * chunk_size_y,
             };
 
+            let threads_left = &threads_left;
             let processed_tris = processed_tris.as_ref();
             let uniforms = &uniforms;
             spawner.spawn(move || {
@@ -373,6 +371,11 @@ fn render_to_image(config: &Config, save_name: &str) {
 
                     pixels_shaded += renderer::rasterize(&mut sub_buf, tri, processed_tris, uniforms);
                 }
+
+                let mut threads_left = threads_left.lock().expect("Failed to obtain threads_left lock");
+                let index = threads_left.binary_search(&(i as u32)).unwrap();
+                threads_left.remove(index);
+                println!("Thread {} is complete! Threads {:?} are still running.", i, threads_left);
             });
         }
     });

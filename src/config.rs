@@ -345,7 +345,7 @@ fn load_obj<'a>(obj: &str, mtls: &'a HashMap<String, MtlData>, color_freq: f64, 
 
             // but not a tex or norm attrib
             if vt.1 {
-                vt_indices.push((vt.0, current_tex, v_indices.len() - 1));
+                vt_indices.push((vt.0, current_tex, v_indices.len() - 1)); // v_indices.len() - 1 is essentially the triangle index since we make a tri for every element
             }
 
             if vn.1 {

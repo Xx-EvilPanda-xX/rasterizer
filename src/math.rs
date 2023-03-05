@@ -131,12 +131,26 @@ pub fn line_3d_from_points(p1: &Point3d, p2: &Point3d) -> Line3d {
     }
 }
 
-pub fn solve_line_3d_z(l: &Line3d, z: f64) -> Point3d {
-    let line_y = Line2d { m: l.m_y, b: l.b_y };
-    let line_z = Line2d { m: l.m_z, b: l.b_z };
-    let x = solve_x(&line_z, z);
-    let y = solve_y(&line_y, x);
-    Point3d::new(x, y, z)
+// create a ray (an origin and direction) from two points
+pub fn ray_3d_from_points(p1: &Point3d, p2: &Point3d) -> Ray3d {
+    let origin = *p1;
+    let dir = p2.into_vec() - p1.into_vec();
+
+    Ray3d {
+        a: origin,
+        b: dir,
+    }
+}
+
+// find the distance along the ray which will correlate to having a z value of the input `z`, then solve for x and y
+pub fn solve_ray_3d_z(ray: &Ray3d, z: f64) -> Point3d {
+    let t = (z - ray.a.z) / ray.b.z;
+
+    Point3d {
+        x: ray.a.x + ray.b.x * t,
+        y: ray.a.y + ray.b.y * t,
+        z,
+    }
 }
 
 // checks whether `between` is between p1 and p2 (assumes all inputs are colinear)
@@ -374,6 +388,12 @@ pub struct Line3d {
     pub b_y: f64,
     pub m_z: f64,
     pub b_z: f64,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct Ray3d {
+    pub a: Point3d,
+    pub b: Vec3f,
 }
 
 #[derive(Clone, Copy, Debug)]
