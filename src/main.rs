@@ -388,16 +388,8 @@ fn render_to_image(config: &Config, save_name: &str) {
 
 fn get_config(name: &str) -> String {
     let config_txt = std::fs::read_to_string(name.to_owned() + ".txt").expect("Failed to locate config file");
-    let mut config = String::new();
-
-    // omit whitespace
-    for c in config_txt.chars() {
-        if c != ' ' && c != '\r' {
-            config.push(c);
-        }
-    }
-
-    config
+    // remove whitespace and caridge returns
+    config_txt.chars().filter(|&c| c != ' ' && c != '\r').collect()
 }
 
 pub struct MtlData {
@@ -427,8 +419,8 @@ fn get_name(mat: &str) -> Option<String> {
 
 fn get_color(mat: &str) -> Option<[u8; 3]> {
     for line in mat.lines() {
-        if line.starts_with("Kd") {
-            let color_str = line.split_at(line.find(' ').unwrap() + 1).1;
+        if line.starts_with("Kd ") {
+            let color_str = line.strip_prefix("Kd ").unwrap();
             let mut color_iter = color_str.split(' ');
 
             let mut color = [0; 3];
@@ -445,8 +437,8 @@ fn get_color(mat: &str) -> Option<[u8; 3]> {
 
 fn get_tex(mat: &str) -> Option<RgbaImage> {
     for line in mat.lines() {
-        if line.starts_with("map_Kd") {
-            let path = line.split_at(line.find(' ').unwrap() + 1).1;
+        if line.starts_with("map_Kd ") {
+            let path = line.strip_prefix("map_Kd ").unwrap();
             let mut tex = image::load(
                 BufReader::new(File::open(path).expect(&format!("Failed to open texture at {}", path))),
                 image::ImageFormat::from_path(path).expect(&format!("No such image type at {}", path))

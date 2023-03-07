@@ -229,10 +229,6 @@ pub fn solve_lines(l1: &Line2d, l2: &Line2d) -> Point2d {
 }
 
 pub fn solve_x(l: &Line2d, y: f64) -> f64 {
-    if l.b.is_infinite() {
-        return l.m;
-    }
-
     (y - l.b) / l.m
 }
 

@@ -1,5 +1,5 @@
 use std::mem::swap;
-use crate::{math::*, SubBuffer};
+use crate::{math::*, SubBuffer, COLOR_BUF_CHANNELS};
 use image::RgbaImage;
 
 #[derive(Clone, Debug)]
@@ -121,10 +121,10 @@ pub fn rasterize(buf: &mut SubBuffer, tri: &Triangle, occ: &[Triangle], u: &Unif
             end_x = end_x.clamp(0, dims.0);
             for x in start_x..end_x {
                 // localize the index into the sub buffer to the current chunk
-                let i = (y - buf.start_y) * dims.0 + x;
+                let i = ((y - buf.start_y) * dims.0 + x) as usize;
                 // we can safely pass in 0 for the z here because we will never being solving for anything other than z with this plane
                 let depth = lerp_fast(&planes.pos_z, x as f64, y as f64, 0.0);
-                if depth < buf.depth[i as usize] && depth >= super::SCREEN_Z {
+                if depth < buf.depth[i] && depth >= super::SCREEN_Z {
                     let color = pixel_shader(tri, occ, u, &planes, x, y);
 
                     // discard transparency
@@ -132,10 +132,10 @@ pub fn rasterize(buf: &mut SubBuffer, tri: &Triangle, occ: &[Triangle], u: &Unif
                         continue;
                     }
 
-                    buf.color[i as usize * 3] = color[0];
-                    buf.color[i as usize * 3 + 1] = color[1];
-                    buf.color[i as usize * 3 + 2] = color[2];
-                    buf.depth[i as usize] = depth;
+                    buf.color[i * COLOR_BUF_CHANNELS] = color[0];
+                    buf.color[i * COLOR_BUF_CHANNELS + 1] = color[1];
+                    buf.color[i * COLOR_BUF_CHANNELS + 2] = color[2];
+                    buf.depth[i] = depth;
                     pixels_shaded += 1;
                 }
             };
