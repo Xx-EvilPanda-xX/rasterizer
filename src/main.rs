@@ -116,7 +116,10 @@ fn start_interactive(mut config: Config<'static>) {
 
     let dims = (config.width, config.height);
 
+    let light = get_light();
+
     let mut processed_tris = config.triangles.clone().into_boxed_slice();
+    let mut processed_light = light.clone().into_boxed_slice();
     let mut buf = Buffer {
         color: vec![0; (config.width * config.height) as usize * COLOR_BUF_CHANNELS].into_boxed_slice(),
         depth: vec![DEPTH_INIT; (config.width * config.height) as usize].into_boxed_slice(),
@@ -158,6 +161,7 @@ fn start_interactive(mut config: Config<'static>) {
                 };
 
                 vertex_shader_pass(&config.triangles, &mut processed_tris, &uniforms, dims, Some(&mut pool), config.render_threads);
+                update_light(&light, &mut processed_light, config.light_pos, config.light_scale, &view, &proj, config.n, dims);
                 clear(&mut buf, config.clear_color);
                 // end vertex shader + misc
 
@@ -177,9 +181,10 @@ fn start_interactive(mut config: Config<'static>) {
                         };
 
                         let processed_tris = processed_tris.as_ref();
+                        let processed_light = processed_light.as_ref();
                         let uniforms = &uniforms;
                         spawner.execute(move || {
-                            for tri in processed_tris {
+                            for tri in processed_tris.iter().chain(processed_light.iter()) {
                                 match &tri.clip {
                                     Clip::Zero => {},
                                     Clip::One(second_triangle) => {
@@ -222,7 +227,7 @@ fn start_interactive(mut config: Config<'static>) {
 
             // Close events
             if input.key_pressed(VirtualKeyCode::Escape) || input.quit() {
-                println!("Bye!");
+                println!("Exiting.");
                 *control_flow = ControlFlow::Exit;
             }
 
@@ -239,6 +244,10 @@ fn start_interactive(mut config: Config<'static>) {
 
             camera.update_pos(dt, &input);
             window.request_redraw();
+
+            if input.key_held(VirtualKeyCode::F) {
+                println!("Camera position: ({}, {}, {})", camera.loc.x, camera.loc.y, camera.loc.z);
+            }
         }
     });
 }
@@ -281,6 +290,118 @@ fn flip_and_copy(buf: &Buffer, frame: &mut [u8], dims: (u32, u32)) {
             frame[index_p + 3] = renderer::FULLY_OPAQUE;
         }
     }
+
+    if height % 2 == 1 {
+        let y = height / 2;
+        for x in 0..width {
+            let index_p = (width * y + x) as usize * COLOR_BUF_CHANNELS;
+            let p = &buf.color[index_p..index_p + COLOR_BUF_CHANNELS];
+
+            let index_p = (width * y + x) as usize * FRAME_BUF_CHANNELS;
+            frame[index_p] = p[0];
+            frame[index_p + 1] = p[1];
+            frame[index_p + 2] = p[2];
+            frame[index_p + 3] = renderer::FULLY_OPAQUE;
+        }
+    }
+}
+
+static LIGHT: [(Point3d, Vec3f); 36] = [
+    (Point3d { x: -0.5, y: -0.5, z: -0.5 }, Vec3f { x:  0.0, y:  0.0, z: -1.0 }),
+    (Point3d { x:  0.5, y: -0.5, z: -0.5 }, Vec3f { x:  0.0, y:  0.0, z: -1.0 }),
+    (Point3d { x:  0.5, y:  0.5, z: -0.5 }, Vec3f { x:  0.0, y:  0.0, z: -1.0 }),
+    (Point3d { x:  0.5, y:  0.5, z: -0.5 }, Vec3f { x:  0.0, y:  0.0, z: -1.0 }),
+    (Point3d { x: -0.5, y:  0.5, z: -0.5 }, Vec3f { x:  0.0, y:  0.0, z: -1.0 }),
+    (Point3d { x: -0.5, y: -0.5, z: -0.5 }, Vec3f { x:  0.0, y:  0.0, z: -1.0 }),
+    (Point3d { x: -0.5, y: -0.5, z:  0.5 }, Vec3f { x:  0.0, y:  0.0, z:  1.0 }),
+    (Point3d { x:  0.5, y: -0.5, z:  0.5 }, Vec3f { x:  0.0, y:  0.0, z:  1.0 }),
+    (Point3d { x:  0.5, y:  0.5, z:  0.5 }, Vec3f { x:  0.0, y:  0.0, z:  1.0 }),
+    (Point3d { x:  0.5, y:  0.5, z:  0.5 }, Vec3f { x:  0.0, y:  0.0, z:  1.0 }),
+    (Point3d { x: -0.5, y:  0.5, z:  0.5 }, Vec3f { x:  0.0, y:  0.0, z:  1.0 }),
+    (Point3d { x: -0.5, y: -0.5, z:  0.5 }, Vec3f { x:  0.0, y:  0.0, z:  1.0 }),
+    (Point3d { x: -0.5, y:  0.5, z:  0.5 }, Vec3f { x: -1.0, y:  0.0, z:  0.0 }),
+    (Point3d { x: -0.5, y:  0.5, z: -0.5 }, Vec3f { x: -1.0, y:  0.0, z:  0.0 }),
+    (Point3d { x: -0.5, y: -0.5, z: -0.5 }, Vec3f { x: -1.0, y:  0.0, z:  0.0 }),
+    (Point3d { x: -0.5, y: -0.5, z: -0.5 }, Vec3f { x: -1.0, y:  0.0, z:  0.0 }),
+    (Point3d { x: -0.5, y: -0.5, z:  0.5 }, Vec3f { x: -1.0, y:  0.0, z:  0.0 }),
+    (Point3d { x: -0.5, y:  0.5, z:  0.5 }, Vec3f { x: -1.0, y:  0.0, z:  0.0 }),
+    (Point3d { x:  0.5, y:  0.5, z:  0.5 }, Vec3f { x:  1.0, y:  0.0, z:  0.0 }),
+    (Point3d { x:  0.5, y:  0.5, z: -0.5 }, Vec3f { x:  1.0, y:  0.0, z:  0.0 }),
+    (Point3d { x:  0.5, y: -0.5, z: -0.5 }, Vec3f { x:  1.0, y:  0.0, z:  0.0 }),
+    (Point3d { x:  0.5, y: -0.5, z: -0.5 }, Vec3f { x:  1.0, y:  0.0, z:  0.0 }),
+    (Point3d { x:  0.5, y: -0.5, z:  0.5 }, Vec3f { x:  1.0, y:  0.0, z:  0.0 }),
+    (Point3d { x:  0.5, y:  0.5, z:  0.5 }, Vec3f { x:  1.0, y:  0.0, z:  0.0 }),
+    (Point3d { x: -0.5, y: -0.5, z: -0.5 }, Vec3f { x:  0.0, y: -1.0, z:  0.0 }),
+    (Point3d { x:  0.5, y: -0.5, z: -0.5 }, Vec3f { x:  0.0, y: -1.0, z:  0.0 }),
+    (Point3d { x:  0.5, y: -0.5, z:  0.5 }, Vec3f { x:  0.0, y: -1.0, z:  0.0 }),
+    (Point3d { x:  0.5, y: -0.5, z:  0.5 }, Vec3f { x:  0.0, y: -1.0, z:  0.0 }),
+    (Point3d { x: -0.5, y: -0.5, z:  0.5 }, Vec3f { x:  0.0, y: -1.0, z:  0.0 }),
+    (Point3d { x: -0.5, y: -0.5, z: -0.5 }, Vec3f { x:  0.0, y: -1.0, z:  0.0 }),
+    (Point3d { x: -0.5, y:  0.5, z: -0.5 }, Vec3f { x:  0.0, y:  1.0, z:  0.0 }),
+    (Point3d { x:  0.5, y:  0.5, z: -0.5 }, Vec3f { x:  0.0, y:  1.0, z:  0.0 }),
+    (Point3d { x:  0.5, y:  0.5, z:  0.5 }, Vec3f { x:  0.0, y:  1.0, z:  0.0 }),
+    (Point3d { x:  0.5, y:  0.5, z:  0.5 }, Vec3f { x:  0.0, y:  1.0, z:  0.0 }),
+    (Point3d { x: -0.5, y:  0.5, z:  0.5 }, Vec3f { x:  0.0, y:  1.0, z:  0.0 }),
+    (Point3d { x: -0.5, y:  0.5, z: -0.5 }, Vec3f { x:  0.0, y:  1.0, z:  0.0 }),
+];
+
+fn get_light() -> Vec<renderer::Triangle<'static>> {
+    let mut out = Vec::new();
+    const WHITE: [u8; 3] = [255, 255, 255];
+
+    for vert in LIGHT.chunks(3) {
+        let ((a, n_a), (b, n_b), (c, n_c)) = (vert[0], vert[1], vert[2]);
+
+        out.push(renderer::Triangle {
+            a: renderer::Vertex {
+                pos: a,
+                pos_world: Point3d::origin(),
+                pos_clip: Point3d::origin(),
+                color: WHITE,
+                n: n_a.inv(),
+                tex: [0.0, 0.0]
+            },
+            b: renderer::Vertex {
+                pos: b,
+                pos_world: Point3d::origin(),
+                pos_clip: Point3d::origin(),
+                color: WHITE,
+                n: n_b.inv(),
+                tex: [0.0, 0.0]
+            },
+            c: renderer::Vertex {
+                pos: c,
+                pos_world: Point3d::origin(),
+                pos_clip: Point3d::origin(),
+                color: WHITE,
+                n: n_c.inv(),
+                tex: [0.0, 0.0],
+            },
+            tex: None,
+            // these values are intitalized in the vertex shader
+            clip: Clip::Zero,
+            ab: Vec3f::default(),
+            ba: Vec3f::default(),
+            ac: Vec3f::default(),
+            bc: Vec3f::default(),
+        });
+    }
+
+    out
+}
+
+fn update_light<'a>(light: &[renderer::Triangle<'a>], processed_light: &mut [renderer::Triangle<'a>], light_pos: Point3d, light_scale: f64, view: &Mat4f, proj: &Mat4f, n: f64, dims: (u32, u32)) {
+    let uniforms = renderer::Uniforms {
+        model: Mat4f::from_trans_scale(light_pos.x, light_pos.y, light_pos.z, light_scale),
+        view: *view,
+        proj: *proj,
+        inv_view: view.inverse(),
+        near_clipping_plane: n,
+        // the above fields are the only ones used by the vertex shader
+        ..Default::default()
+    };
+
+    vertex_shader_pass(light, processed_light, &uniforms, dims, None, 0)
 }
 
 fn render_to_image(config: &Config, save_name: &str) {
@@ -456,36 +577,10 @@ fn get_matrices(config: &Config, camera: Option<&Camera>) -> (Mat4f, Mat4f, Mat4
         return (Mat4f::new(), Mat4f::new(), Mat4f::new());
     }
 
-    let mut trans = Mat4f::new();
-    let mut rot_x = Mat4f::new();
-    let mut rot_y = Mat4f::new();
-    let mut rot_z = Mat4f::new();
-
-    let theta_x = config.rot_x.to_radians();
-    let theta_y = config.rot_y.to_radians();
-    let theta_z = config.rot_z.to_radians();
-
-    trans[0][0] = config.scale;
-    trans[1][1] = config.scale;
-    trans[2][2] = config.scale;
-    trans[0][3] = config.trans_x;
-    trans[1][3] = config.trans_y;
-    trans[2][3] = config.trans_z;
-
-    rot_x[1][1] = theta_x.cos();
-    rot_x[1][2] = -theta_x.sin();
-    rot_x[2][1] = theta_x.sin();
-    rot_x[2][2] = theta_x.cos();
-
-    rot_y[2][2] = theta_y.cos();
-    rot_y[0][0] = theta_y.cos();
-    rot_y[0][2] = theta_y.sin();
-    rot_y[2][0] = -theta_y.sin();
-
-    rot_z[1][1] = theta_z.cos();
-    rot_z[0][0] = theta_z.cos();
-    rot_z[0][1] = -theta_z.sin();
-    rot_z[1][0] = theta_z.sin();
+    let trans = Mat4f::from_trans_scale(config.trans_x, config.trans_y, config.trans_z, config.scale);
+    let rot_x = Mat4f::from_rot_x(config.rot_x.to_radians());
+    let rot_y = Mat4f::from_rot_y(config.rot_y.to_radians());
+    let rot_z = Mat4f::from_rot_z(config.rot_z.to_radians());
 
     let mut model = math::mul_matrix_matrix(&trans, &rot_x);
     model = math::mul_matrix_matrix(&model, &rot_y);

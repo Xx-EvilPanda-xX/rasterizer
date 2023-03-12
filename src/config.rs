@@ -23,6 +23,7 @@ pub struct Config<'a> {
     pub trans_y: f64,
     pub trans_z: f64,
     pub light_pos: Point3d,
+    pub light_scale: f64,
     pub ambient: f64,
     pub diffuse: f64,
     pub specular: f64,
@@ -71,13 +72,14 @@ impl<'a> Config<'a> {
         let trans_y = eval(field("trans_y", &mut img_config), legacy, "0.0");
         let trans_z = eval(field("trans_z", &mut img_config), legacy, "0.0");
         let light_pos = eval(field("light_pos", &mut img_config), legacy, "[0.0,0.0,0.0]");
+        let light_scale = eval(field("light_scale", &mut img_config), legacy, "0.0");
         let ambient = eval(field("ambient", &mut img_config), legacy, "1.0");
         let diffuse = eval(field("diffuse", &mut img_config), legacy, "0.0");
         let specular = eval(field("specular", &mut img_config), legacy, "0.0");
         let shininess = eval(field("shininess", &mut img_config), legacy, "0");
         let render_shadows = eval(field("render_shadows", &mut img_config), legacy, "false");
         let tex_sample_lerp = eval(field("tex_sample_lerp", &mut img_config), legacy, "false");
-        let render_threads = eval(field("render_threads", &mut img_config), legacy, "1");
+        let render_threads = eval(field("render_threads", &mut img_config), legacy, "16");
         let show_progess = eval(field("show_progress", &mut img_config), legacy, "false");
 
         let mut triangles = Vec::new();
@@ -111,6 +113,7 @@ impl<'a> Config<'a> {
             trans_y: trans_y.parse().expect("Failed to parse trans_y"),
             trans_z: trans_z.parse().expect("Failed to parse trans_z"),
             light_pos: Point3d::from_arr(parse_arr(light_pos)),
+            light_scale: light_scale.parse().expect("Failed to parse light_scale"),
             ambient: ambient.parse().expect("Failed to parse ambient"),
             diffuse: diffuse.parse().expect("Failed to parse diffuse"),
             specular: specular.parse().expect("Failed to parse specular"),
@@ -195,7 +198,7 @@ fn eval<'a>(field: Result<&'a str, FieldError>, legacy: bool, default: &'a str) 
 }
 
 fn print_field_help() {
-    println!("Fields should be layout like so for the render config:");
+    println!("\nFields should be laid out like so for the render config:");
     println!("width = u32
 height = u32
 clear_color = [u8, u8, u8]
@@ -213,6 +216,7 @@ trans_x = f64
 trans_y = f64
 trans_z = f64
 light_pos = [f64, f64, f64]
+light_scale = f64
 ambient = f64
 diffuse = f64
 specular = f64

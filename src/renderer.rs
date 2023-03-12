@@ -57,6 +57,7 @@ pub struct AttributePlanes {
     pos_z: Plane,
 }
 
+#[derive(Default)]
 pub struct Uniforms {
     pub model: Mat4f,
     pub view: Mat4f,
@@ -75,9 +76,34 @@ pub struct Uniforms {
     pub tex_sample_lerp: bool,
 }
 
+fn in_section_1(p: &Point2d, start_y: u32) -> bool {
+    p.y < start_y as f64
+}
+
+fn in_section_2(p: &Point2d, dims: (u32, u32)) -> bool {
+    p.x > dims.0 as f64
+}
+
+fn in_section_3(p: &Point2d, dims: (u32, u32), start_y: u32) -> bool {
+    p.y > (start_y + dims.1) as f64
+}
+
+fn in_section_4(p: &Point2d) -> bool {
+    p.x < 0.0
+}
+
 pub fn rasterize(buf: &mut SubBuffer, tri: &Triangle, occ: &[Triangle], u: &Uniforms) -> u32 {
     let dims = buf.dims;
-    let (a, b, c) = (&tri.a.pos, &tri.b.pos, &tri.c.pos);
+    let (a, b, c) = (&tri.a.pos.into_2d(), &tri.b.pos.into_2d(), &tri.c.pos.into_2d());
+
+    // simple check before hand to see if the triangle will ever be visible
+    if (in_section_1(a, buf.start_y) && in_section_1(b, buf.start_y) && in_section_1(c, buf.start_y)) ||
+        (in_section_2(a, dims) && in_section_2(b, dims) && in_section_2(c, dims)) ||
+        (in_section_3(a, dims, buf.start_y) && in_section_3(b, dims, buf.start_y) && in_section_3(c, dims, buf.start_y)) ||
+        (in_section_4(a) && in_section_4(b) && in_section_4(c)) {
+        return 0;
+    }
+
     let (a_world, b_world, c_world) = (&tri.a.pos_world, &tri.b.pos_world, &tri.c.pos_world);
     let planes = AttributePlanes {
         color_r: plane_from_points(&Point3d::new(a.x, a.y, tri.a.color[0] as f64), &Point3d::new(b.x, b.y, tri.b.color[0] as f64), &Point3d::new(c.x, c.y, tri.c.color[0] as f64), PlaneSolveType::Z),
@@ -95,9 +121,10 @@ pub fn rasterize(buf: &mut SubBuffer, tri: &Triangle, occ: &[Triangle], u: &Unif
 
     let mut pixels_shaded = 0;
     for i in 0..2 {
+        // we use .ceil() as our method of rounding here because it allows for the correct (pixel-perfect) start and stop values
         let (mut start_y, mut end_y) = match i {
-            0 => (tri.a.pos.y.ceil() as u32, tri.b.pos.y.ceil() as u32),
-            1 => (tri.b.pos.y.ceil() as u32, tri.c.pos.y.ceil() as u32),
+            0 => (a.y.ceil() as u32, b.y.ceil() as u32),
+            1 => (b.y.ceil() as u32, c.y.ceil() as u32),
             _ => unreachable!(),
         };
 
@@ -315,6 +342,12 @@ pub fn vertex_shader<'a>(tri: &Triangle<'a>, u: &Uniforms, dims: (u32, u32)) -> 
         }
         _ => unreachable!()
     };
+
+    // no clipping in legacy mode
+    if u.legacy {
+        tri_override = None;
+        clip = Clip::Zero;
+    }
 
     // in the case of an override, we already have a half contructed triangle and simply need to complete it
     if let Some(mut tri) = tri_override {

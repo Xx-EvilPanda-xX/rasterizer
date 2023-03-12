@@ -408,7 +408,7 @@ pub enum PlaneSolveType {
     Z,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Mat4f {
     pub mat: [[f64; 4]; 4],
 }
@@ -456,6 +456,44 @@ impl Mat4f {
             [0.0, 0.0, 1.0, 0.0],
             [0.0, 0.0, 0.0, 1.0]]
         }
+    }
+
+    pub fn from_rot_x(rot: f64) -> Self {
+        let mut out = Mat4f::new();
+        out[1][1] = rot.cos();
+        out[1][2] = -rot.sin();
+        out[2][1] = rot.sin();
+        out[2][2] = rot.cos();
+        out
+    }
+
+    pub fn from_rot_y(rot: f64) -> Self {
+        let mut out = Mat4f::new();
+        out[2][2] = rot.cos();
+        out[0][0] = rot.cos();
+        out[0][2] = rot.sin();
+        out[2][0] = -rot.sin();
+        out
+    }
+
+    pub fn from_rot_z(rot: f64) -> Self {
+        let mut out = Mat4f::new();
+        out[1][1] = rot.cos();
+        out[0][0] = rot.cos();
+        out[0][1] = -rot.sin();
+        out[1][0] = rot.sin();
+        out
+    }
+
+    pub fn from_trans_scale(x: f64, y: f64, z: f64, scale: f64) -> Self {
+        let mut out = Mat4f::new();
+        out[0][0] = scale;
+        out[1][1] = scale;
+        out[2][2] = scale;
+        out[0][3] = x;
+        out[1][3] = y;
+        out[2][3] = z;
+        out
     }
 
     pub fn no_trans(&self) -> Self {
