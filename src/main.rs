@@ -4,7 +4,7 @@ use image::{RgbImage, RgbaImage};
 use math::*;
 use config::Config;
 use renderer::Clip;
-use winit::{event_loop::{ControlFlow, EventLoop}, window::WindowBuilder, dpi::{LogicalSize, PhysicalPosition}, event::{Event, VirtualKeyCode, DeviceEvent}};
+use winit::{event_loop::{ControlFlow, EventLoop}, window::{WindowBuilder, Fullscreen}, dpi::{PhysicalPosition, PhysicalSize}, event::{Event, VirtualKeyCode, DeviceEvent}};
 use winit_input_helper::WinitInputHelper;
 use pixels::{Pixels, SurfaceTexture};
 use scoped_threadpool::Pool;
@@ -96,10 +96,32 @@ fn parse_args(args: &[String]) -> HashMap<String, String> {
 fn start_interactive(mut config: Config<'static>) {
     let event_loop = EventLoop::new();
     let mut input = WinitInputHelper::new();
-    let size = LogicalSize::new(config.width as f64, config.height as f64);
+
+    let fullscreen = if config.fullscreen {
+        Some(Fullscreen::Borderless(None))
+    } else {
+        None
+    };
+
+    let position = if config.fullscreen {
+        PhysicalPosition::new(0, 0)
+    } else {
+        PhysicalPosition::new(50, 50)
+    };
+
+    let size = if config.fullscreen {
+        let size = event_loop.primary_monitor().unwrap().size();
+        config.width = size.width;
+        config.height = size.height;
+        size
+    } else {
+        PhysicalSize::new(config.width, config.height)
+    };
+
     let window = WindowBuilder::new()
         .with_title("Renderer")
-        .with_position(PhysicalPosition::new(50, 50))
+        .with_fullscreen(fullscreen)
+        .with_position(position)
         .with_inner_size(size)
         .with_min_inner_size(size)
         .build(&event_loop)

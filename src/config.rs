@@ -12,6 +12,7 @@ pub struct Config<'a> {
     pub height: u32,
     pub clear_color: [u8; 3],
     pub legacy: bool,
+    pub fullscreen: bool,
     pub fov: f64,
     pub n: f64,
     pub f: f64,
@@ -59,6 +60,7 @@ impl<'a> Config<'a> {
 
         let legacy = legacy.parse().expect("Failed to parse legacy");
 
+        let fullscreen = eval(field("fullscreen", &mut img_config), legacy, "false");
         let color_freq = eval(field("color_freq", &mut img_config), legacy, "0.0");
         let shade_mode = eval(field("shade_mode", &mut img_config), legacy, "0");
         let fov = eval(field("fov", &mut img_config), legacy, "0.0");
@@ -102,6 +104,7 @@ impl<'a> Config<'a> {
             height: height.parse().expect("Failed to parse height"),
             clear_color: parse_arr(clear_color),
             legacy,
+            fullscreen: fullscreen.parse().expect("Failed to parse fullscreen"),
             fov: fov.parse().expect("Failed to parse height"),
             n: n.parse().expect("Failed to parse n"),
             f: f.parse().expect("Failed to parse f"),
@@ -203,6 +206,7 @@ fn print_field_help() {
 height = u32
 clear_color = [u8, u8, u8]
 legacy = bool
+fullscreen = bool
 color_freq = f64
 shade_mode = u32
 fov = f64
