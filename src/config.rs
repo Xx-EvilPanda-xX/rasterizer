@@ -28,6 +28,7 @@ pub struct Config<'a> {
     pub ambient: f64,
     pub diffuse: f64,
     pub specular: f64,
+    pub light_diss: f64,
     pub shininess: u32,
     pub render_shadows: bool,
     pub tex_sample_lerp: bool,
@@ -78,6 +79,7 @@ impl<'a> Config<'a> {
         let ambient = eval(field("ambient", &mut img_config), legacy, "1.0");
         let diffuse = eval(field("diffuse", &mut img_config), legacy, "0.0");
         let specular = eval(field("specular", &mut img_config), legacy, "0.0");
+        let light_diss = eval(field("light_diss", &mut img_config), legacy, "0.0");
         let shininess = eval(field("shininess", &mut img_config), legacy, "0");
         let render_shadows = eval(field("render_shadows", &mut img_config), legacy, "false");
         let tex_sample_lerp = eval(field("tex_sample_lerp", &mut img_config), legacy, "false");
@@ -120,6 +122,7 @@ impl<'a> Config<'a> {
             ambient: ambient.parse().expect("Failed to parse ambient"),
             diffuse: diffuse.parse().expect("Failed to parse diffuse"),
             specular: specular.parse().expect("Failed to parse specular"),
+            light_diss: light_diss.parse().expect("Failed to parse light_diss"),
             shininess: shininess.parse().expect("Failed to parse shininess"),
             render_shadows: render_shadows.parse().expect("Failed to parse render_shadows"),
             tex_sample_lerp: tex_sample_lerp.parse().expect("Failed to parse tex_sample_lerp"),
@@ -224,11 +227,12 @@ light_scale = f64
 ambient = f64
 diffuse = f64
 specular = f64
+light_diss = f64
 shininess = u32
-render_shadows: bool,
-tex_sample_lerp: bool,
-render_threads: u32,
-show_progress: bool");
+render_shadows = bool,
+tex_sample_lerp = bool,
+render_threads = u32,
+show_progress = bool");
     println!("\nAnd like so for triangle configs:");
     println!("a = [f64, f64, f64]
 b = [f64, f64, f64]

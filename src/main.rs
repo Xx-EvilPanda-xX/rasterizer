@@ -176,6 +176,7 @@ fn start_interactive(mut config: Config<'static>) {
                     ambient: config.ambient,
                     diffuse: config.diffuse,
                     specular: config.specular,
+                    light_diss: config.light_diss,
                     shininess: config.shininess,
                     legacy: config.legacy,
                     render_shadows: config.render_shadows,
@@ -266,6 +267,11 @@ fn start_interactive(mut config: Config<'static>) {
 
             camera.update_pos(dt, &input);
             window.request_redraw();
+
+            if input.key_held(VirtualKeyCode::R) {
+                config.light_pos = camera.loc;
+                config.light_pos.y -= config.light_scale;
+            }
 
             if input.key_held(VirtualKeyCode::F) {
                 println!("Camera position: ({}, {}, {})", camera.loc.x, camera.loc.y, camera.loc.z);
@@ -448,6 +454,7 @@ fn render_to_image(config: &Config, save_name: &str) {
         ambient: config.ambient,
         diffuse: config.diffuse,
         specular: config.specular,
+        light_diss: config.light_diss,
         shininess: config.shininess,
         legacy: config.legacy,
         render_shadows: config.render_shadows,

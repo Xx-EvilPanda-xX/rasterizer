@@ -70,6 +70,7 @@ pub struct Uniforms {
     pub ambient: f64,
     pub diffuse: f64,
     pub specular: f64,
+    pub light_diss: f64,
     pub shininess: u32,
     pub legacy: bool,
     pub render_shadows: bool,
@@ -629,13 +630,15 @@ fn calc_lighting(norm: &Vec3f, pix_pos: &Point3d, u: &Uniforms, occ: &[Triangle]
     let reflected = reflect(&light_dir.inv(), norm);
     let specular = Vec3f::dot(&view_dir.inv(), &reflected).max(0.0).powi(u.shininess as i32) * u.specular;
 
+    let diss = (u.light_diss * u.light_diss / dist_3d(pix_pos, &u.light_pos)).min(1.0);
+
     let shadow = if u.render_shadows {
         shadow(occ, &u.light_pos, pix_pos)
     } else {
         1.0
     };
 
-    (ambient, diffuse * shadow, specular * shadow)
+    (ambient, diffuse * shadow * diss, specular * shadow * diss)
 }
 
 fn shadow(occ: &[Triangle], light_pos: &Point3d, pix_pos: &Point3d) -> f64 {
