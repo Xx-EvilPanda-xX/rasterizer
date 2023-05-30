@@ -172,10 +172,6 @@ impl<'a> Triangle<'a> {
             },
             tex: None,
             clip: Clip::Zero,
-            ab: Vec3f::default(),
-            ba: Vec3f::default(),
-            ac: Vec3f::default(),
-            bc: Vec3f::default(),
         }
     }
 }
@@ -418,10 +414,6 @@ fn load_obj<'a>(obj: &str, mtls: &'a HashMap<String, MtlData>, color_freq: f64, 
             tex: None,
             // these values are intitalized in the vertex shader
             clip: Clip::Zero,
-            ab: Vec3f::default(),
-            ba: Vec3f::default(),
-            ac: Vec3f::default(),
-            bc: Vec3f::default(),
         });
     }
 

@@ -142,6 +142,10 @@ fn start_interactive(mut config: Config<'static>) {
 
     let mut processed_tris = config.triangles.clone().into_boxed_slice();
     let mut processed_light = light.clone().into_boxed_slice();
+    // will contain purely the world space transform of the scene, used for shadow calculation
+    let mut occlusion_testing = vec![[Point3d::default(); 3]; processed_tris.len()].into_boxed_slice();
+    // this is kinda just a way around having to use an optional type in the signature of vertex_shader_pass. it's completely unused. FIXME
+    let mut dummy_buffer = vec![[Point3d::default(); 3]; processed_light.len()].into_boxed_slice();
     let mut buf = Buffer {
         color: vec![0; (config.width * config.height) as usize * COLOR_BUF_CHANNELS].into_boxed_slice(),
         depth: vec![DEPTH_INIT; (config.width * config.height) as usize].into_boxed_slice(),
@@ -164,6 +168,7 @@ fn start_interactive(mut config: Config<'static>) {
 
                 // vertex shader + misc
                 let (model, view, proj) = get_matrices(&config, Some(&camera));
+
                 let uniforms = renderer::Uniforms {
                     model,
                     view,
@@ -183,8 +188,8 @@ fn start_interactive(mut config: Config<'static>) {
                     tex_sample_lerp: config.tex_sample_lerp,
                 };
 
-                vertex_shader_pass(&config.triangles, &mut processed_tris, &uniforms, dims, Some(&mut pool), config.render_threads);
-                update_light(&light, &mut processed_light, config.light_pos, config.light_scale, &view, &proj, config.n, dims);
+                vertex_shader_pass(&config.triangles, &mut processed_tris, &mut occlusion_testing, &uniforms, dims, Some(&mut pool), config.render_threads);
+                update_light(&light, &mut processed_light, &mut dummy_buffer, config.light_pos, config.light_scale, &view, &proj, config.n, dims);
                 clear(&mut buf, config.clear_color);
                 // end vertex shader + misc
 
@@ -205,19 +210,20 @@ fn start_interactive(mut config: Config<'static>) {
 
                         let processed_tris = processed_tris.as_ref();
                         let processed_light = processed_light.as_ref();
+                        let occlusion_testing = occlusion_testing.as_ref();
                         let uniforms = &uniforms;
                         spawner.execute(move || {
                             for tri in processed_tris.iter().chain(processed_light.iter()) {
                                 match &tri.clip {
                                     Clip::Zero => {},
                                     Clip::One(second_triangle) => {
-                                        renderer::rasterize(&mut sub_buf, &second_triangle, processed_tris, uniforms);
+                                        renderer::rasterize(&mut sub_buf, &second_triangle, &occlusion_testing, uniforms);
                                     }
                                     Clip::Two => {}, // the clipped triangle has replaced the original, we can continue normally
                                     Clip::Three => continue,
                                 }
 
-                                renderer::rasterize(&mut sub_buf, tri, processed_tris, uniforms);
+                                renderer::rasterize(&mut sub_buf, tri, &occlusion_testing, uniforms);
                             }
                         });
                     }
@@ -264,6 +270,9 @@ fn start_interactive(mut config: Config<'static>) {
 
             const ROT_SPEED: f64 = 3.0;
             config.rot_y += dt * ROT_SPEED;
+
+            let scroll = input.scroll_diff();
+            config.fov -= scroll as f64;
 
             camera.update_pos(dt, &input);
             window.request_redraw();
@@ -408,17 +417,13 @@ fn get_light() -> Vec<renderer::Triangle<'static>> {
             tex: None,
             // these values are intitalized in the vertex shader
             clip: Clip::Zero,
-            ab: Vec3f::default(),
-            ba: Vec3f::default(),
-            ac: Vec3f::default(),
-            bc: Vec3f::default(),
         });
     }
 
     out
 }
 
-fn update_light<'a>(light: &[renderer::Triangle<'a>], processed_light: &mut [renderer::Triangle<'a>], light_pos: Point3d, light_scale: f64, view: &Mat4f, proj: &Mat4f, n: f64, dims: (u32, u32)) {
+fn update_light<'a>(light: &[renderer::Triangle<'a>], processed_light: &mut [renderer::Triangle<'a>], dummy_buffer: &mut [[Point3d; 3]], light_pos: Point3d, light_scale: f64, view: &Mat4f, proj: &Mat4f, n: f64, dims: (u32, u32)) {
     let uniforms = renderer::Uniforms {
         model: Mat4f::from_trans_scale(light_pos.x, light_pos.y, light_pos.z, light_scale),
         view: *view,
@@ -429,7 +434,7 @@ fn update_light<'a>(light: &[renderer::Triangle<'a>], processed_light: &mut [ren
         ..Default::default()
     };
 
-    vertex_shader_pass(light, processed_light, &uniforms, dims, None, 0)
+    vertex_shader_pass(light, processed_light, dummy_buffer, &uniforms, dims, None, 0)
 }
 
 fn render_to_image(config: &Config, save_name: &str) {
@@ -469,7 +474,8 @@ fn render_to_image(config: &Config, save_name: &str) {
     }
 
     let mut processed_tris = config.triangles.clone().into_boxed_slice();
-    vertex_shader_pass(&config.triangles, &mut processed_tris, &uniforms, dims, None, 0);
+    let mut occlusion_testing = vec![[Point3d::default(); 3]; processed_tris.len()];
+    vertex_shader_pass(&config.triangles, &mut processed_tris, &mut occlusion_testing, &uniforms, dims, None, 0);
 
     if show_progress {
         println!("Done!");
@@ -494,6 +500,7 @@ fn render_to_image(config: &Config, save_name: &str) {
 
             let threads_left = &threads_left;
             let processed_tris = processed_tris.as_ref();
+            let occlusion_testing = occlusion_testing.as_ref();
             let uniforms = &uniforms;
             spawner.spawn(move || {
                 let mut pixels_shaded = 0;
@@ -513,13 +520,13 @@ fn render_to_image(config: &Config, save_name: &str) {
                     match &tri.clip {
                         Clip::Zero => {},
                         Clip::One(second_triangle) => {
-                            pixels_shaded += renderer::rasterize(&mut sub_buf, &second_triangle, processed_tris, uniforms);
+                            pixels_shaded += renderer::rasterize(&mut sub_buf, &second_triangle, &occlusion_testing, uniforms);
                         }
                         Clip::Two => {},
                         Clip::Three => continue,
                     }
 
-                    pixels_shaded += renderer::rasterize(&mut sub_buf, tri, processed_tris, uniforms);
+                    pixels_shaded += renderer::rasterize(&mut sub_buf, tri, &occlusion_testing, uniforms);
                 }
 
                 let mut threads_left = threads_left.lock().expect("Failed to obtain threads_left lock");
@@ -631,6 +638,7 @@ fn get_matrices(config: &Config, camera: Option<&Camera>) -> (Mat4f, Mat4f, Mat4
 fn vertex_shader_pass<'a>(
     tris: &[renderer::Triangle<'a>],
     processed_tris: &mut [renderer::Triangle<'a>],
+    occlusion_testing: &mut [[Point3d; 3]],
     u: &renderer::Uniforms,
     dims: (u32, u32),
     pool: Option<&mut Pool>,
@@ -643,34 +651,28 @@ fn vertex_shader_pass<'a>(
         pool.scoped(|spawner| {
             let chunks = tris.chunks(chunk_size);
             let p_chunks = processed_tris.chunks_mut(chunk_size);
-            for (chunk, p_chunk) in chunks.zip(p_chunks) {
+            let occlusion_chunks = occlusion_testing.chunks_mut(chunk_size);
+            for ((chunk, p_chunk), occlusion_chunk) in chunks.zip(p_chunks).zip(occlusion_chunks) {
                 spawner.execute(move || {
-                    for (tri, processed_tri) in chunk.iter().zip(p_chunk.iter_mut()) {
-                        process_tri(tri, processed_tri, u, dims);
+                    for ((tri, processed_tri), occlusion_test) in chunk.iter().zip(p_chunk.iter_mut()).zip(occlusion_chunk.iter_mut()) {
+                        process_tri(tri, processed_tri, occlusion_test, u, dims);
                     }
                 });
             }
         });
     } else {
-        for (tri, processed_tri) in tris.iter().zip(processed_tris.iter_mut()) {
-            process_tri(tri, processed_tri, u, dims);
+        for ((tri, processed_tri), occlusion_test) in tris.iter().zip(processed_tris.iter_mut()).zip(occlusion_testing.iter_mut()) {
+            process_tri(tri, processed_tri, occlusion_test, u, dims);
         }
     }
 
-    fn process_tri<'a>(tri: &renderer::Triangle<'a>, processed_tri: &mut renderer::Triangle<'a>, u: &renderer::Uniforms, dims: (u32, u32)) {
-        let mut processed = renderer::vertex_shader(tri, u, dims);
+    fn process_tri<'a>(tri: &renderer::Triangle<'a>, processed_tri: &mut renderer::Triangle<'a>, occlusion_test: &mut [Point3d; 3], u: &renderer::Uniforms, dims: (u32, u32)) {
+        let (mut processed, occlusion) = renderer::vertex_shader(tri, u, dims);
         renderer::sort_tri_points_y(&mut processed);
-        processed.ab = (processed.b.pos_world.into_vec() - processed.a.pos_world.into_vec()).normalize();
-        processed.ba = (processed.a.pos_world.into_vec() - processed.b.pos_world.into_vec()).normalize();
-        processed.ac = (processed.c.pos_world.into_vec() - processed.a.pos_world.into_vec()).normalize();
-        processed.bc = (processed.c.pos_world.into_vec() - processed.b.pos_world.into_vec()).normalize();
+        *occlusion_test = occlusion;
 
         if let Clip::One(tri) = &mut processed.clip {
             renderer::sort_tri_points_y(tri);
-            tri.ab = (tri.b.pos_world.into_vec() - tri.a.pos_world.into_vec()).normalize();
-            tri.ba = (tri.a.pos_world.into_vec() - tri.b.pos_world.into_vec()).normalize();
-            tri.ac = (tri.c.pos_world.into_vec() - tri.a.pos_world.into_vec()).normalize();
-            tri.bc = (tri.c.pos_world.into_vec() - tri.b.pos_world.into_vec()).normalize();
         }
 
         *processed_tri = processed;

@@ -9,12 +9,6 @@ pub struct Triangle<'a> {
     pub c: Vertex,
     pub tex: Option<&'a RgbaImage>,
     pub clip: Clip<'a>,
-
-    // directions of each vertex to every other vertex (used for point_in_tri())
-    pub ab: Vec3f,
-    pub ba: Vec3f,
-    pub ac: Vec3f,
-    pub bc: Vec3f,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -93,7 +87,7 @@ fn in_section_4(p: &Point2d) -> bool {
     p.x < 0.0
 }
 
-pub fn rasterize(buf: &mut SubBuffer, tri: &Triangle, occ: &[Triangle], u: &Uniforms) -> u32 {
+pub fn rasterize(buf: &mut SubBuffer, tri: &Triangle, occ: &[[Point3d; 3]], u: &Uniforms) -> u32 {
     let dims = buf.dims;
     let (a, b, c) = (&tri.a.pos.into_2d(), &tri.b.pos.into_2d(), &tri.c.pos.into_2d());
 
@@ -235,8 +229,8 @@ pub fn rasterize(buf: &mut SubBuffer, tri: &Triangle, occ: &[Triangle], u: &Unif
     pixels_shaded
 }
 
-// takes triangle in model space and returns it in raster space
-pub fn vertex_shader<'a>(tri: &Triangle<'a>, u: &Uniforms, dims: (u32, u32)) -> Triangle<'a> {
+// takes triangle in model space and returns it in raster space, also returns pure model transform
+pub fn vertex_shader<'a>(tri: &Triangle<'a>, u: &Uniforms, dims: (u32, u32)) -> (Triangle<'a>, [Point3d; 3]) {
     let (a, b, c) = (&tri.a, &tri.b, &tri.c);
 
     // model transform
@@ -308,15 +302,15 @@ pub fn vertex_shader<'a>(tri: &Triangle<'a>, u: &Uniforms, dims: (u32, u32)) -> 
             let inter2 = solve_ray_3d_z(&ray2, -clip_dist);
 
             // find the factor by which to lerp attribs in the newly found points
-            let lerp_val_b = dist_3d(&a.pos, &inter1).sqrt() / dist_3d(&a.pos, &c.pos).sqrt();
-            let lerp_val_c = dist_3d(&b.pos, &inter2).sqrt() / dist_3d(&b.pos, &c.pos).sqrt();
+            let lerp_val_a = (dist_3d(&a.pos, &inter1) / dist_3d(&a.pos, &c.pos)).sqrt();
+            let lerp_val_b = (dist_3d(&b.pos, &inter2) / dist_3d(&b.pos, &c.pos)).sqrt();
 
             // 1st new triangle
-            tri_override = Some(make_clipped_triangle(a, b, c, tri.tex, &[a, b], &[(&inter2, lerp_val_c, ClipLerp::BC)], &u.inv_view));
+            tri_override = Some(make_clipped_triangle(a, b, c, tri.tex, &[a, b], &[(&inter2, lerp_val_b, ClipLerp::BC)], &u.inv_view));
             Clip::One(
                 Box::new(
                     // 2nd new triangle
-                    make_clipped_triangle(a, b, c, tri.tex, &[a], &[(&inter1, lerp_val_b, ClipLerp::AC), (&inter2, lerp_val_c, ClipLerp::BC)], &u.inv_view)
+                    make_clipped_triangle(a, b, c, tri.tex, &[a], &[(&inter1, lerp_val_a, ClipLerp::AC), (&inter2, lerp_val_b, ClipLerp::BC)], &u.inv_view)
                 )
             )
         }
@@ -364,7 +358,7 @@ pub fn vertex_shader<'a>(tri: &Triangle<'a>, u: &Uniforms, dims: (u32, u32)) -> 
         }
 
         tri.clip = clip;
-        tri
+        (tri, [pos_world_a, pos_world_b, pos_world_c])
     } else {
         let mut pos_clip_a = Point3d::default();
         let mut pos_clip_b = Point3d::default();
@@ -374,7 +368,7 @@ pub fn vertex_shader<'a>(tri: &Triangle<'a>, u: &Uniforms, dims: (u32, u32)) -> 
         clip_space_calc(pos_b, &mut pos_b, &mut pos_clip_b, &u.proj, dims);
         clip_space_calc(pos_c, &mut pos_c, &mut pos_clip_c, &u.proj, dims);
 
-        Triangle {
+        (Triangle {
             a: Vertex {
                 pos: pos_a,
                 pos_world: pos_world_a,
@@ -401,12 +395,7 @@ pub fn vertex_shader<'a>(tri: &Triangle<'a>, u: &Uniforms, dims: (u32, u32)) -> 
             },
             tex: tri.tex,
             clip,
-            // these are initialized outside of vertex shader to avoid conflicts with vertex sorting
-            ab: Vec3f::default(),
-            ba: Vec3f::default(),
-            ac: Vec3f::default(),
-            bc: Vec3f::default(),
-        }
+        }, [pos_world_a, pos_world_b, pos_world_c])
     }
 }
 
@@ -509,10 +498,6 @@ fn make_clipped_triangle<'a>(
         c: out[2],
         tex,
         clip: Clip::Zero, // this functions purpose is to contruct a triangle THAT HAS ALREADY been clipped
-        ab: Vec3f::default(),
-        ba: Vec3f::default(),
-        ac: Vec3f::default(),
-        bc: Vec3f::default(),
     }
 }
 
@@ -536,7 +521,7 @@ a know x and y will result in a `NaN` or `inf`. The only way to solve this would
 dimensions and solve for w from a know x, y, and z, which im definetly not gonna do. (FIXED)
 */
 
-fn pixel_shader(tri: &Triangle, occ: &[Triangle], u: &Uniforms, planes: &AttributePlanes, x: u32, y: u32) -> [u8; 4] {
+fn pixel_shader(tri: &Triangle, occ: &[[Point3d; 3]], u: &Uniforms, planes: &AttributePlanes, x: u32, y: u32) -> [u8; 4] {
     let (x, y) = (x as f64, y as f64);
     const SPEC_COLOR: [u8; 4] = [255, 255, 255, 255];
 
@@ -618,7 +603,7 @@ fn pixel_shader(tri: &Triangle, occ: &[Triangle], u: &Uniforms, planes: &Attribu
     color
 }
 
-fn calc_lighting(norm: &Vec3f, pix_pos: &Point3d, u: &Uniforms, occ: &[Triangle]) -> (f64, f64, f64) {
+fn calc_lighting(norm: &Vec3f, pix_pos: &Point3d, u: &Uniforms, occ: &[[Point3d; 3]]) -> (f64, f64, f64) {
     // pixel to light
     let light_dir = (u.light_pos.into_vec() - pix_pos.into_vec()).normalize();
 
@@ -641,20 +626,20 @@ fn calc_lighting(norm: &Vec3f, pix_pos: &Point3d, u: &Uniforms, occ: &[Triangle]
     (ambient, diffuse * shadow * diss, specular * shadow * diss)
 }
 
-fn shadow(occ: &[Triangle], light_pos: &Point3d, pix_pos: &Point3d) -> f64 {
+fn shadow(occ: &[[Point3d; 3]], light_pos: &Point3d, pix_pos: &Point3d) -> f64 {
     let line = line_3d_from_points(light_pos, pix_pos);
     let mut shadow = 1.0;
 
     // check for a collision with every triangle in the scene
     for tri in occ {
-        let (a, b, c) = (&tri.a.pos_world, &tri.b.pos_world, &tri.c.pos_world);
+        let (a, b, c) = (&tri[0], &tri[1], &tri[2]);
         // the solve type here doesn't actually matter since we are never actually solving for this plane, just intersecting it
         let plane = plane_from_points(a, b, c, PlaneSolveType::Z);
         let inter = solve_line_plane(&line, &plane);
 
         // is the point of intersection within the triangle and between the pixel and the light?
         if is_point_between(pix_pos, light_pos, &inter) {
-            if point_in_tri(&inter, [a, b, c], &tri.ab, &tri.ba, &tri.ac, &tri.bc) {
+            if point_in_tri(&inter, [a, b, c]) {
                 shadow = 0.0;
                 break;
             }
