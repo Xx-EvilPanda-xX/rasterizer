@@ -115,6 +115,83 @@ pub fn rasterize(buf: &mut SubBuffer, tri: &Triangle, occ: &[[Point3d; 3]], u: &
     };
 
     let mut pixels_shaded = 0;
+
+    let mut pixel = |x, y| {
+        // localize the index into the sub buffer to the current chunk
+        let i = ((y - buf.start_y) * dims.0 + x) as usize;
+
+        if i > buf.depth.len() {
+            println!("{}, {}", x, y);
+            println!("{}", dims.1);
+        }
+        // we can safely pass in 0 for the z here because we will never being solving for anything other than z with this plane
+        let depth = lerp_fast(&planes.pos_z, x as f64, y as f64, 0.0);
+        if depth < buf.depth[i] && depth >= super::SCREEN_Z {
+            let color = pixel_shader(tri, occ, u, &planes, x, y);
+
+            // discard transparency
+            if color[3] == 0 {
+                return;
+            }
+
+            buf.color[i * COLOR_BUF_CHANNELS] = color[0];
+            buf.color[i * COLOR_BUF_CHANNELS + 1] = color[1];
+            buf.color[i * COLOR_BUF_CHANNELS + 2] = color[2];
+            buf.depth[i] = depth;
+            pixels_shaded += 1;
+        }
+    };
+
+    // for i in 0..3 {
+    //     let (mut start_point, mut end_point) = match i {
+    //         0 => (a, b),
+    //         1 => (b, c),
+    //         2 => (c, a),
+    //         _ => unreachable!()
+    //     };
+
+    //     let line = line_2d_from_points(start_point, end_point);
+
+    //     let (min_y, max_y) = if start_point.y > end_point.y {
+    //         (end_point.y as u32, start_point.y as u32)
+    //     } else {
+    //         (start_point.y as u32, end_point.y as u32)
+    //     };
+
+    //     if start_point.x > end_point.x {
+    //         swap(&mut start_point, &mut end_point);
+    //     }
+
+    //     let start_x = (start_point.x as u32).clamp(0, dims.0 - 1);
+    //     let end_x = (end_point.x as u32).clamp(0, dims.0 - 1);
+
+    //     let mut y = (start_point.y as u32).clamp(buf.start_y, buf.start_y + dims.1 - 1);
+    //     for x in start_x..=end_x {
+    //         // USE RAW SLOPE INSTEAD
+    //         let current = solve_y(&line, x as f64);
+
+    //         if current < buf.start_y as f64 || current > (buf.start_y + dims.1) as f64 {
+    //             continue;
+    //         }
+
+    //         if y >= buf.start_y && y < buf.start_y + dims.1 {
+    //             pixel(x, y);
+    //         }
+
+    //         if start_point.y > end_point.y {
+    //             while y > current as u32 && y > min_y && y > buf.start_y {
+    //                 pixel(x, y);
+    //                 y -= 1;
+    //             }
+    //         } else {
+    //             while y < current as u32 && y < max_y && y < buf.start_y + dims.1 {
+    //                 pixel(x, y);
+    //                 y += 1;
+    //             }
+    //         }
+    //     }
+    // }
+
     for i in 0..2 {
         // we use .ceil() as our method of rounding here because it allows for the correct (pixel-perfect) start and stop values
         let (mut start_y, mut end_y) = match i {
@@ -142,24 +219,7 @@ pub fn rasterize(buf: &mut SubBuffer, tri: &Triangle, occ: &[[Point3d; 3]], u: &
             start_x = start_x.clamp(0, dims.0);
             end_x = end_x.clamp(0, dims.0);
             for x in start_x..end_x {
-                // localize the index into the sub buffer to the current chunk
-                let i = ((y - buf.start_y) * dims.0 + x) as usize;
-                // we can safely pass in 0 for the z here because we will never being solving for anything other than z with this plane
-                let depth = lerp_fast(&planes.pos_z, x as f64, y as f64, 0.0);
-                if depth < buf.depth[i] && depth >= super::SCREEN_Z {
-                    let color = pixel_shader(tri, occ, u, &planes, x, y);
-
-                    // discard transparency
-                    if color[3] == 0 {
-                        continue;
-                    }
-
-                    buf.color[i * COLOR_BUF_CHANNELS] = color[0];
-                    buf.color[i * COLOR_BUF_CHANNELS + 1] = color[1];
-                    buf.color[i * COLOR_BUF_CHANNELS + 2] = color[2];
-                    buf.depth[i] = depth;
-                    pixels_shaded += 1;
-                }
+                pixel(x, y);
             };
         }
     }

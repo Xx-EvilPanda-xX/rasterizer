@@ -1,6 +1,6 @@
 use crate::math::{Point3d, Vec3f};
 use winit_input_helper::WinitInputHelper;
-use winit::event::VirtualKeyCode;
+use winit::keyboard::KeyCode;
 
 #[derive(Debug)]
 pub struct Camera {
@@ -19,7 +19,7 @@ impl Camera {
         z: 0.0,
     };
 
-    const WALK_SPEED: f64 = 5.0;
+    const WALK_SPEED: f64 = 2.0;
     const SENS: f64 = 0.075;
 
     pub fn new(
@@ -70,22 +70,22 @@ impl Camera {
 
     fn update_acc(&mut self, input: &WinitInputHelper) {
         self.acc = Vec3f::default();
-        if input.key_held(VirtualKeyCode::W) {
+        if input.key_held(KeyCode::KeyW) {
             self.acc.z += 1.0;
         }
-        if input.key_held(VirtualKeyCode::S) {
+        if input.key_held(KeyCode::KeyS) {
             self.acc.z -= 1.0;
         }
-        if input.key_held(VirtualKeyCode::D) {
+        if input.key_held(KeyCode::KeyD) {
             self.acc.x += 1.0;
         }
-        if input.key_held(VirtualKeyCode::A) {
+        if input.key_held(KeyCode::KeyA) {
             self.acc.x -= 1.0;
         }
-        if input.key_held(VirtualKeyCode::Space) {
+        if input.key_held(KeyCode::Space) {
             self.acc.y += 1.0;
         }
-        if input.key_held(VirtualKeyCode::LShift) {
+        if input.key_held(KeyCode::ShiftLeft) {
             self.acc.y -= 1.0;
         }
     }

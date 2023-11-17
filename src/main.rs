@@ -4,7 +4,7 @@ use image::{RgbImage, RgbaImage};
 use math::*;
 use config::Config;
 use renderer::Clip;
-use winit::{event_loop::{ControlFlow, EventLoop}, window::{WindowBuilder, Fullscreen}, dpi::{PhysicalPosition, PhysicalSize}, event::{Event, VirtualKeyCode, DeviceEvent}};
+use winit::{event_loop::EventLoop , window::{WindowBuilder, Fullscreen}, dpi::{PhysicalPosition, PhysicalSize}, event::{Event, DeviceEvent, WindowEvent}, keyboard::KeyCode};
 use winit_input_helper::WinitInputHelper;
 use pixels::{Pixels, SurfaceTexture};
 use scoped_threadpool::Pool;
@@ -94,7 +94,7 @@ fn parse_args(args: &[String]) -> HashMap<String, String> {
 }
 
 fn start_interactive(mut config: Config<'static>) {
-    let event_loop = EventLoop::new();
+    let event_loop = EventLoop::new().expect("couldn't create eventloop");
     let mut input = WinitInputHelper::new();
 
     let fullscreen = if config.fullscreen {
@@ -118,8 +118,9 @@ fn start_interactive(mut config: Config<'static>) {
         PhysicalSize::new(config.width, config.height)
     };
 
-    let window = WindowBuilder::new()
+    let window: winit::window::Window = WindowBuilder::new()
         .with_title("Renderer")
+        .with_visible(false)
         .with_fullscreen(fullscreen)
         .with_position(position)
         .with_inner_size(size)
@@ -127,6 +128,7 @@ fn start_interactive(mut config: Config<'static>) {
         .build(&event_loop)
         .unwrap();
 
+    window.set_visible(true);
     window.set_cursor_visible(false);
 
     let mut frame_buffer = {
@@ -158,9 +160,9 @@ fn start_interactive(mut config: Config<'static>) {
 
     let mut camera = Camera::new(Point3d::origin(), 0.0, 0.0);
 
-    event_loop.run(move |event, _, control_flow| {
+    event_loop.run(move |event, window_target| {
         match &event {
-            Event::RedrawRequested(_) => {
+            Event::WindowEvent { window_id: _, event: WindowEvent::RedrawRequested } => {
                 let now = Instant::now();
                 let frame_time = now.duration_since(last_frame).as_secs_f64();
                 last_frame = now;
@@ -231,12 +233,12 @@ fn start_interactive(mut config: Config<'static>) {
                 // end rasterize
 
                 // present
-                let pixels = frame_buffer.get_frame_mut();
+                let pixels = frame_buffer.frame_mut();
                 flip_and_copy(&buf, pixels, dims);
 
                 if let Err(e) = frame_buffer.render() {
                     println!("{}", e);
-                    *control_flow = ControlFlow::Exit;
+                    window_target.exit();
                 }
                 // end present
             }
@@ -255,38 +257,40 @@ fn start_interactive(mut config: Config<'static>) {
             last_instant = now;
 
             // Close events
-            if input.key_pressed(VirtualKeyCode::Escape) || input.quit() {
+            if input.key_pressed(KeyCode::Escape) || input.close_requested() {
                 println!("Exiting.");
-                *control_flow = ControlFlow::Exit;
+                window_target.exit();
             }
 
             // Resize the window
             if let Some(size) = input.window_resized() {
                 if let Err(e) = frame_buffer.resize_surface(size.width, size.height) {
                     println!("{}", e);
-                    *control_flow = ControlFlow::Exit;
+                    window_target.exit();
                 }
             }
 
             const ROT_SPEED: f64 = 3.0;
-            config.rot_y += dt * ROT_SPEED;
+            if config.do_rotation {
+                config.rot_y += dt * ROT_SPEED;
+            }
 
-            let scroll = input.scroll_diff();
+            let (_, scroll) = input.scroll_diff();
             config.fov -= scroll as f64;
 
             camera.update_pos(dt, &input);
             window.request_redraw();
 
-            if input.key_held(VirtualKeyCode::R) {
+            if input.key_held(KeyCode::KeyR) {
                 config.light_pos = camera.loc;
                 config.light_pos.y -= config.light_scale;
             }
 
-            if input.key_held(VirtualKeyCode::F) {
+            if input.key_held(KeyCode::KeyF) {
                 println!("Camera position: ({}, {}, {})", camera.loc.x, camera.loc.y, camera.loc.z);
             }
         }
-    });
+    }).expect("Couldn't run event loop");
 }
 
 // set color buffer to the clear color

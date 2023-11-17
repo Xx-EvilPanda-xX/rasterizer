@@ -34,6 +34,7 @@ pub struct Config<'a> {
     pub tex_sample_lerp: bool,
     pub render_threads: u32,
     pub show_progress: bool,
+    pub do_rotation: bool,
     pub triangles: Vec<Triangle<'a>>,
 }
 
@@ -85,21 +86,18 @@ impl<'a> Config<'a> {
         let tex_sample_lerp = eval(field("tex_sample_lerp", &mut img_config), legacy, "false");
         let render_threads = eval(field("render_threads", &mut img_config), legacy, "16");
         let show_progess = eval(field("show_progress", &mut img_config), legacy, "false");
+        let do_rotation = eval(field("do_rotation", &mut img_config), legacy, "false");
 
-        let mut triangles = Vec::new();
-
-        if let Some(text) = obj {
-            triangles = load_obj(
+        let triangles = if let Some(text) = obj {
+            load_obj(
                 &text,
                 textures,
                 color_freq.parse().expect("Failed to parse color_freq"),
                 shade_mode.parse().expect("Failed to parse shade_mode")
-            );
+            )
         } else {
-            for section in sections {
-                triangles.push(Triangle::from_config(section));
-            }
-        }
+            sections.into_iter().map(|section| Triangle::from_config(section)).collect()
+        };
 
         Self {
             width: width.parse().expect("Failed to parse width"),
@@ -128,6 +126,7 @@ impl<'a> Config<'a> {
             tex_sample_lerp: tex_sample_lerp.parse().expect("Failed to parse tex_sample_lerp"),
             render_threads: render_threads.parse().expect("Failed to parse render_threads"),
             show_progress: show_progess.parse().expect("Failed to parse show_progress"),
+            do_rotation: do_rotation.parse().expect("Failed to parse show_progress"),
             triangles,
         }
     }
@@ -225,10 +224,11 @@ diffuse = f64
 specular = f64
 light_diss = f64
 shininess = u32
-render_shadows = bool,
-tex_sample_lerp = bool,
-render_threads = u32,
-show_progress = bool");
+render_shadows = bool
+tex_sample_lerp = bool
+render_threads = u32
+show_progress = bool
+do_rotation = bool");
     println!("\nAnd like so for triangle configs:");
     println!("a = [f64, f64, f64]
 b = [f64, f64, f64]
