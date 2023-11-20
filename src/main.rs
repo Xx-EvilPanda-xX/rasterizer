@@ -188,6 +188,7 @@ fn start_interactive(mut config: Config<'static>) {
                     legacy: config.legacy,
                     render_shadows: config.render_shadows,
                     tex_sample_lerp: config.tex_sample_lerp,
+                    wireframe: config.wireframe,
                 };
 
                 vertex_shader_pass(&config.triangles, &mut processed_tris, &mut occlusion_testing, &uniforms, dims, Some(&mut pool), config.render_threads);
@@ -468,6 +469,7 @@ fn render_to_image(config: &Config, save_name: &str) {
         legacy: config.legacy,
         render_shadows: config.render_shadows,
         tex_sample_lerp: config.tex_sample_lerp,
+        wireframe: config.wireframe,
     };
 
     let tri_count = config.triangles.len();

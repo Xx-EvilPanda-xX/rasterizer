@@ -35,6 +35,7 @@ pub struct Config<'a> {
     pub render_threads: u32,
     pub show_progress: bool,
     pub do_rotation: bool,
+    pub wireframe: bool,
     pub triangles: Vec<Triangle<'a>>,
 }
 
@@ -87,6 +88,7 @@ impl<'a> Config<'a> {
         let render_threads = eval(field("render_threads", &mut img_config), legacy, "16");
         let show_progess = eval(field("show_progress", &mut img_config), legacy, "false");
         let do_rotation = eval(field("do_rotation", &mut img_config), legacy, "false");
+        let wireframe = eval(field("wireframe", &mut img_config), legacy, "false");
 
         let triangles = if let Some(text) = obj {
             load_obj(
@@ -127,6 +129,7 @@ impl<'a> Config<'a> {
             render_threads: render_threads.parse().expect("Failed to parse render_threads"),
             show_progress: show_progess.parse().expect("Failed to parse show_progress"),
             do_rotation: do_rotation.parse().expect("Failed to parse show_progress"),
+            wireframe: wireframe.parse().expect("Failed to parse wireframe"),
             triangles,
         }
     }
@@ -228,7 +231,8 @@ render_shadows = bool
 tex_sample_lerp = bool
 render_threads = u32
 show_progress = bool
-do_rotation = bool");
+do_rotation = bool
+wireframe = bool");
     println!("\nAnd like so for triangle configs:");
     println!("a = [f64, f64, f64]
 b = [f64, f64, f64]

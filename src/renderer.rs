@@ -69,6 +69,7 @@ pub struct Uniforms {
     pub legacy: bool,
     pub render_shadows: bool,
     pub tex_sample_lerp: bool,
+    pub wireframe: bool,
 }
 
 fn in_section_1(p: &Point2d, start_y: u32) -> bool {
@@ -218,9 +219,19 @@ pub fn rasterize(buf: &mut SubBuffer, tri: &Triangle, occ: &[[Point3d; 3]], u: &
 
             start_x = start_x.clamp(0, dims.0);
             end_x = end_x.clamp(0, dims.0);
-            for x in start_x..end_x {
-                pixel(x, y);
-            };
+
+            if u.wireframe {
+                if start_x != end_x {
+                    pixel(start_x, y);
+                }
+                if end_x > start_x {
+                    pixel(end_x - 1, y);
+                }
+            } else {
+                for x in start_x..end_x {
+                    pixel(x, y);
+                };
+            }
         }
     }
 
