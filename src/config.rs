@@ -128,7 +128,7 @@ impl<'a> Config<'a> {
             tex_sample_lerp: tex_sample_lerp.parse().expect("Failed to parse tex_sample_lerp"),
             render_threads: render_threads.parse().expect("Failed to parse render_threads"),
             show_progress: show_progess.parse().expect("Failed to parse show_progress"),
-            do_rotation: do_rotation.parse().expect("Failed to parse show_progress"),
+            do_rotation: do_rotation.parse().expect("Failed to parse do_rotation"),
             wireframe: wireframe.parse().expect("Failed to parse wireframe"),
             triangles,
         }

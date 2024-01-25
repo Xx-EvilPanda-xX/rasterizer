@@ -686,7 +686,7 @@ fn calc_lighting(norm: &Vec3f, pix_pos: &Point3d, u: &Uniforms, occ: &[[Point3d;
     let reflected = reflect(&light_dir.inv(), norm);
     let specular = Vec3f::dot(&view_dir.inv(), &reflected).max(0.0).powi(u.shininess as i32) * u.specular;
 
-    let diss = (u.light_diss * u.light_diss / dist_3d(pix_pos, &u.light_pos)).min(1.0);
+    let diss = u.light_diss * u.light_diss / dist_3d(pix_pos, &u.light_pos);
 
     let shadow = if u.render_shadows {
         shadow(occ, &u.light_pos, pix_pos)

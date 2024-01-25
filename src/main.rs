@@ -157,6 +157,7 @@ fn start_interactive(mut config: Config<'static>) {
 
     let mut last_instant = Instant::now();
     let mut last_frame = Instant::now();
+    let mut hold_wireframe = false;
 
     let mut camera = Camera::new(Point3d::origin(), 0.0, 0.0);
 
@@ -188,7 +189,7 @@ fn start_interactive(mut config: Config<'static>) {
                     legacy: config.legacy,
                     render_shadows: config.render_shadows,
                     tex_sample_lerp: config.tex_sample_lerp,
-                    wireframe: config.wireframe,
+                    wireframe: hold_wireframe,
                 };
 
                 vertex_shader_pass(&config.triangles, &mut processed_tris, &mut occlusion_testing, &uniforms, dims, Some(&mut pool), config.render_threads);
@@ -290,6 +291,8 @@ fn start_interactive(mut config: Config<'static>) {
             if input.key_held(KeyCode::KeyF) {
                 println!("Camera position: ({}, {}, {})", camera.loc.x, camera.loc.y, camera.loc.z);
             }
+
+            hold_wireframe = if config.wireframe { !input.key_held(KeyCode::KeyC) } else { input.key_held(KeyCode::KeyC) };
         }
     }).expect("Couldn't run event loop");
 }

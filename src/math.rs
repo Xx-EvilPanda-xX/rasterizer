@@ -495,7 +495,7 @@ impl Mat4f {
         new
     }
 
-    // Gauss-Jordan Method
+    // Gauss-Jordan Method: each elementary row operation is a shorthand for a matrix multiplication on both sides of the equation
     pub fn inverse(&self) -> Self {
         // elementary row operations
         fn swap_rows(r1: usize, r2: usize, mat: &mut [[f64; 8]; 4]) {
