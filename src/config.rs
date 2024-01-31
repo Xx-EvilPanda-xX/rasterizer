@@ -306,31 +306,32 @@ fn load_obj<'a>(obj: &str, mtls: &'a HashMap<String, MtlData>, color_freq: f64, 
     let mut current_tex = None;
     let mut current_mtl_color = None;
 
-    for line in obj.lines() {
+    for (i, line) in obj.lines().enumerate() {
         if line.starts_with("v ") {
             let v = line.strip_prefix("v ").unwrap();
             let mut elems = v.split(' ');
-            let x = elems.next().unwrap().trim().parse().unwrap();
-            let y = elems.next().unwrap().trim().parse().unwrap();
-            let z = elems.next().unwrap().trim().parse().unwrap();
+            let x = elems.next().expect(&format!("Vertex position must have x element: line {}", i)).trim().parse().expect(&format!("Failed to parse vertex position x element: line {}", i));
+            let y = elems.next().expect(&format!("Vertex position must have y element: line {}", i)).trim().parse().expect(&format!("Failed to parse vertex position y element: line {}", i));
+            let z = elems.next().expect(&format!("Vertex position must have z element: line {}", i)).trim().parse().expect(&format!("Failed to parse vertex position z element: line {}", i));
             vertices.push(Point3d::new(x, y, z));
         } else if line.starts_with("vt ") {
             let v = line.strip_prefix("vt ").unwrap();
             let mut elems = v.split(' ');
-            let x = elems.next().unwrap().trim().parse().unwrap();
-            let y = elems.next().unwrap().trim().parse().unwrap();
+            let x = elems.next().expect(&format!("Vertex texture coordinate must have x element: line {}", i)).trim().parse().expect(&format!("Failed to parse vertex texture coordinate x element: line {}", i));
+            let y = elems.next().expect(&format!("Vertex texture coordinate must have y element: line {}", i)).trim().parse().expect(&format!("Failed to parse vertex texture coordinate y element: line {}", i));
             tex_coords.push([x, y]);
         } else if line.starts_with("vn ") {
             let v = line.strip_prefix("vn ").unwrap();
             let mut elems = v.split(' ');
-            let x = elems.next().unwrap().trim().parse().unwrap();
-            let y = elems.next().unwrap().trim().parse().unwrap();
-            let z = elems.next().unwrap().trim().parse().unwrap();
+            let x = elems.next().expect(&format!("Vertex normal vector must have x element: line {}", i)).trim().parse().expect(&format!("Failed to parse vertex normal vector x element: line {}", i));
+            let y = elems.next().expect(&format!("Vertex normal vector must have y element: line {}", i)).trim().parse().expect(&format!("Failed to parse vertex normal vector y element: line {}", i));
+            let z = elems.next().expect(&format!("Vertex normal vector must have z element: line {}", i)).trim().parse().expect(&format!("Failed to parse vertex normal vector z element: line {}", i));
             normals.push(Vec3f::new(x, y, z));
         } else if line.starts_with("f ") {
             let f = line.strip_prefix("f ").unwrap();
             let mut elems = f.split(' ');
-            let idx = [elems.next().unwrap(), elems.next().unwrap(), elems.next().unwrap()];
+            const ERR: &'static str = "Unsupported polygon vertex count! Polygons must be triangles (3 vertices).";
+            let idx = [elems.next().expect(ERR), elems.next().expect(ERR), elems.next().expect(ERR)];
 
             let mut v = [0; 3];
             let mut vt = ([0; 3], false);
@@ -339,20 +340,18 @@ fn load_obj<'a>(obj: &str, mtls: &'a HashMap<String, MtlData>, color_freq: f64, 
             for (i, &string) in idx.iter().enumerate() {
                 let mut s = string.split('/');
 
-                v[i] = s.next().unwrap().parse::<u32>().expect("Failed to parse vertex position index") - 1;
+                v[i] = s.next().expect(&format!("Polygon indices must contain at least a vertex position index! line: {}", i)).parse::<u32>().expect(&format!("Failed to parse vertex position index. line: {}", i)) - 1;
 
                 if let Some(s) = s.next() {
-                    if let Ok(vt_index) = s.parse::<u32>() {
-                        vt.0[i] = vt_index - 1;
-                        vt.1 = true;
-                    }
+                    let vt_index = s.parse::<u32>().expect(&format!("Failed to parse vertex texture coordinate index: line {}", i));
+                    vt.0[i] = vt_index - 1;
+                    vt.1 = true;
                 }
 
                 if let Some(s) = s.next() {
-                    if let Ok(vn_index) = s.parse::<u32>() {
-                        vn.0[i] = vn_index - 1;
-                        vn.1 = true;
-                    }
+                    let vn_index = s.parse::<u32>().expect(&format!("Failed to parse vertex normal vector index: line {}", i));
+                    vn.0[i] = vn_index - 1;
+                    vn.1 = true;
                 }
             }
 

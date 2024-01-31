@@ -73,18 +73,22 @@ pub struct Uniforms {
     pub wireframe: bool,
 }
 
+// above the frame
 fn in_section_1(p: &Point2d, start_y: u32) -> bool {
     p.y < start_y as f64
 }
 
+// to the right of the frame
 fn in_section_2(p: &Point2d, dims: (u32, u32)) -> bool {
     p.x > dims.0 as f64
 }
 
+// below the frame
 fn in_section_3(p: &Point2d, dims: (u32, u32), start_y: u32) -> bool {
     p.y > (start_y + dims.1) as f64
 }
 
+// to the left of the frame
 fn in_section_4(p: &Point2d) -> bool {
     p.x < 0.0
 }
@@ -119,13 +123,13 @@ pub fn rasterize(buf: &mut SubBuffer, tri: &Triangle, occ: &[[Point3d; 3]], u: &
     let mut pixels_shaded = 0;
 
     let mut pixel = |x, y| {
+        if x >= dims.0 || y < buf.start_y || y >= buf.start_y + dims.1 {
+            return;
+        }
+
         // localize the index into the sub buffer to the current chunk
         let i = ((y - buf.start_y) * dims.0 + x) as usize;
 
-        if i > buf.depth.len() {
-            println!("{}, {}", x, y);
-            println!("{}", dims.1);
-        }
         // we can safely pass in 0 for the z here because we will never being solving for anything other than z with this plane
         let depth = lerp_fast(&planes.pos_z, x as f64, y as f64, 0.0);
         if depth < buf.depth[i] && depth >= super::SCREEN_Z {
@@ -144,91 +148,96 @@ pub fn rasterize(buf: &mut SubBuffer, tri: &Triangle, occ: &[[Point3d; 3]], u: &
         }
     };
 
-    // for i in 0..3 {
-    //     let (mut start_point, mut end_point) = match i {
-    //         0 => (a, b),
-    //         1 => (b, c),
-    //         2 => (c, a),
-    //         _ => unreachable!()
-    //     };
+    let mut draw_line = |p1: &Point2d, p2: &Point2d| {
+        let (mut start_x, mut start_y) = (p1.x.ceil() as i32, p1.y.ceil() as i32);
+        let (mut end_x, mut end_y) = (p2.x.ceil() as i32, p2.y.ceil() as i32);
 
-    //     let line = line_2d_from_points(start_point, end_point);
+        // if the line is vertical dont bother scanning x
+        if start_x == end_x {
+            for y in start_y..end_y {
+                // rule out any negative pixels because casting to u32 causes problems
+                if start_x < 0 || y < 0 {
+                    continue;
+                }
 
-    //     let (min_y, max_y) = if start_point.y > end_point.y {
-    //         (end_point.y as u32, start_point.y as u32)
-    //     } else {
-    //         (start_point.y as u32, end_point.y as u32)
-    //     };
+                pixel(start_x as u32, y as u32);
+            }
 
-    //     if start_point.x > end_point.x {
-    //         swap(&mut start_point, &mut end_point);
-    //     }
+            return;
+        }
 
-    //     let start_x = (start_point.x as u32).clamp(0, dims.0 - 1);
-    //     let end_x = (end_point.x as u32).clamp(0, dims.0 - 1);
+        if start_x > end_x {
+            swap(&mut start_x, &mut end_x);
+            swap(&mut start_y, &mut end_y);
+        }
 
-    //     let mut y = (start_point.y as u32).clamp(buf.start_y, buf.start_y + dims.1 - 1);
-    //     for x in start_x..=end_x {
-    //         // USE RAW SLOPE INSTEAD
-    //         let current = solve_y(&line, x as f64);
+        let line = line_2d_from_points(&Point2d::new(start_x as f64, start_y as f64), &Point2d::new(end_x as f64, end_y as f64));
 
-    //         if current < buf.start_y as f64 || current > (buf.start_y + dims.1) as f64 {
-    //             continue;
-    //         }
+        let mut current_y = start_y;
 
-    //         if y >= buf.start_y && y < buf.start_y + dims.1 {
-    //             pixel(x, y);
-    //         }
+        let mut advance_line = |current_x: i32, current_y: &mut i32, target_y: f64| {
+            let mut diff = *current_y as f64 - target_y;
 
-    //         if start_point.y > end_point.y {
-    //             while y > current as u32 && y > min_y && y > buf.start_y {
-    //                 pixel(x, y);
-    //                 y -= 1;
-    //             }
-    //         } else {
-    //             while y < current as u32 && y < max_y && y < buf.start_y + dims.1 {
-    //                 pixel(x, y);
-    //                 y += 1;
-    //             }
-    //         }
-    //     }
-    // }
+            // rule out any negative pixels because casting to u32 causes problems
+            if current_x >= 0 && *current_y >= 0 && diff.abs() < 0.5 {
+                pixel(current_x as u32, *current_y as u32);
+            }
 
-    for i in 0..2 {
-        // we use .ceil() as our method of rounding here because it allows for the correct (pixel-perfect) start and stop values
-        let (mut start_y, mut end_y) = match i {
-            0 => (a.y.ceil() as u32, b.y.ceil() as u32),
-            1 => (b.y.ceil() as u32, c.y.ceil() as u32),
-            _ => unreachable!(),
+            while diff.abs() > 0.5 {
+                if diff.is_sign_positive() {
+                    *current_y -= 1;
+                }
+
+                if diff.is_sign_negative() {
+                    *current_y += 1;
+                }
+
+                // rule out any negative pixels because casting to u32 causes problems
+                if current_x >= 0 && *current_y >= 0 {
+                    pixel(current_x as u32, *current_y as u32);
+                }
+
+                diff = *current_y as f64 - target_y;
+            }
         };
 
-        start_y = start_y.clamp(buf.start_y, buf.start_y + dims.1);
-        end_y = end_y.clamp(buf.start_y, buf.start_y + dims.1);
-        for y in start_y..end_y {
-            let (start_x, end_x) = match i {
-                0 => top_scanline(tri, y),
-                1 => bottom_scanline(tri, y),
+        for x in start_x..=end_x {
+            advance_line(x, &mut current_y, solve_y(&line, x as f64));
+        }
+    };
+
+    if u.wireframe {
+        draw_line(a, b);
+        draw_line(b, c);
+        draw_line(a, c);
+    } else {
+        for i in 0..2 {
+            // we use .ceil() as our method of rounding here because it allows for the correct (pixel-perfect) start and stop values
+            let (mut start_y, mut end_y) = match i {
+                0 => (a.y.ceil() as u32, b.y.ceil() as u32),
+                1 => (b.y.ceil() as u32, c.y.ceil() as u32),
                 _ => unreachable!(),
             };
 
-            // YOU CANNOT ROUND HERE (.round()). It creates situtations where the start and end x are outside our tri
-            let mut start_x = start_x.ceil() as u32;
-            let mut end_x = end_x.ceil() as u32;
-            if start_x > end_x {
-                swap(&mut start_x, &mut end_x);
-            }
+            start_y = start_y.clamp(buf.start_y, buf.start_y + dims.1);
+            end_y = end_y.clamp(buf.start_y, buf.start_y + dims.1);
+            for y in start_y..end_y {
+                let (start_x, end_x) = match i {
+                    0 => top_scanline(tri, y),
+                    1 => bottom_scanline(tri, y),
+                    _ => unreachable!(),
+                };
 
-            start_x = start_x.clamp(0, dims.0);
-            end_x = end_x.clamp(0, dims.0);
+                // YOU CANNOT ROUND HERE (.round()). It creates situtations where the start and end x are outside our tri
+                let mut start_x = start_x.ceil() as u32;
+                let mut end_x = end_x.ceil() as u32;
+                if start_x > end_x {
+                    swap(&mut start_x, &mut end_x);
+                }
 
-            if u.wireframe {
-                if start_x != end_x {
-                    pixel(start_x, y);
-                }
-                if end_x > start_x {
-                    pixel(end_x - 1, y);
-                }
-            } else {
+                start_x = start_x.clamp(0, dims.0);
+                end_x = end_x.clamp(0, dims.0);
+
                 for x in start_x..end_x {
                     pixel(x, y);
                 };
@@ -593,8 +602,8 @@ a know x and y will result in a `NaN` or `inf`. The only way to solve this would
 dimensions and solve for w from a know x, y, and z, which im definetly not gonna do. (FIXED)
 */
 
-fn pixel_shader(tri: &Triangle, occ: &[[Point3d; 3]], u: &Uniforms, planes: &AttributePlanes, x: u32, y: u32) -> [u8; 4] {
-    let (x, y) = (x as f64, y as f64);
+fn pixel_shader(tri: &Triangle, occ: &[[Point3d; 3]], u: &Uniforms, planes: &AttributePlanes, x1: u32, y1: u32) -> [u8; 4] {
+    let (x, y) = (x1 as f64, y1 as f64);
     const SPEC_COLOR: [u8; 4] = [255, 255, 255, 255];
 
     let (norm, pix_world_pos, base_color) = if INTERPOLATE_FAST {
@@ -615,7 +624,7 @@ fn pixel_shader(tri: &Triangle, occ: &[[Point3d; 3]], u: &Uniforms, planes: &Att
             lerp_fast(&planes.n_x, x_world, y_world, z_world),
             lerp_fast(&planes.n_y, x_world, y_world, z_world),
             lerp_fast(&planes.n_z, x_world, y_world, z_world),
-        );
+        ).normalize(); // !!!!!
 
         let base_color = if let Some(tex) = tri.tex {
             // we calculate texture coords with respect to our pixel's world space position rather than it's clip or raster space position
@@ -660,7 +669,7 @@ fn pixel_shader(tri: &Triangle, occ: &[[Point3d; 3]], u: &Uniforms, planes: &Att
             tri.a.n.x * weights_world.a + tri.b.n.x * weights_world.b + tri.c.n.x * weights_world.c,
             tri.a.n.y * weights_world.a + tri.b.n.y * weights_world.b + tri.c.n.y * weights_world.c,
             tri.a.n.z * weights_world.a + tri.b.n.z * weights_world.b + tri.c.n.z * weights_world.c,
-        );
+        ).normalize();
 
         (norm, pix_world_pos, base_color)
     };
@@ -688,7 +697,8 @@ fn calc_lighting(norm: &Vec3f, pix_pos: &Point3d, u: &Uniforms, occ: &[[Point3d;
     let specular = Vec3f::dot(&view_dir.inv(), &reflected).max(0.0).powi(u.shininess as i32) * u.specular;
 
     let d = dist_3d(pix_pos, &u.light_pos).sqrt();
-    let diss = u.light_intensity / ((d / u.light_dissipation + 1.0) * (d / u.light_dissipation + 1.0));
+    let x = d / u.light_dissipation + 1.0;
+    let diss = u.light_intensity / (x * x);
 
     let shadow = if u.render_shadows {
         shadow(occ, &u.light_pos, pix_pos)
@@ -711,7 +721,7 @@ fn shadow(occ: &[[Point3d; 3]], light_pos: &Point3d, pix_pos: &Point3d) -> f64 {
         let inter = solve_line_plane(&line, &plane);
 
         // is the point of intersection within the triangle and between the pixel and the light?
-        if is_point_between(pix_pos, light_pos, &inter) {
+        if is_point_between3d(pix_pos, light_pos, &inter) {
             if point_in_tri(&inter, [a, b, c]) {
                 shadow = 0.0;
                 break;

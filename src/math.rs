@@ -158,7 +158,7 @@ pub fn solve_ray_3d_z(ray: &Ray3d, z: f64) -> Point3d {
 }
 
 // checks whether `between` is between p1 and p2 (assumes all inputs are colinear)
-pub fn is_point_between(p1: &Point3d, p2: &Point3d, between: &Point3d) -> bool {
+pub fn is_point_between3d(p1: &Point3d, p2: &Point3d, between: &Point3d) -> bool {
     // small correction term to prevent floating point precision errors (negated to prefer returning false when its close)
     let max_dist = dist_3d(p1, p2) - MU;
     let to_p1 = dist_3d(p1, between);
