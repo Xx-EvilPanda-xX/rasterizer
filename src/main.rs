@@ -23,10 +23,11 @@ const FRAME_BUF_CHANNELS: usize = 4;
 struct Buffer {
     color: Box<[u8]>,
     depth: Box<[f64]>,
+    shadow_depth: Box<[f64]>,
 }
 
 pub struct SubBuffer<'a> {
-    color: &'a mut [u8],
+    color: Option<&'a mut [u8]>,
     depth: &'a mut [f64],
     dims: (u32, u32),
     start_y: u32,
@@ -53,7 +54,7 @@ fn main() {
     let mtls = Box::leak(Box::new(load_mtl_data(&obj.1)));
     let config = Config::new(&config_str, &obj.0, mtls);
 
-    if config.render_shadows {
+    if config.shadow_mode == 1 {
         println!("WARNING: Shadow rendering is incredibly slow and time to render will increase with the sqaure of the triangle count. (recommendation: do not exceed 10000 tris at 4k res)");
     }
 
@@ -143,14 +144,17 @@ fn start_interactive(mut config: Config<'static>) {
     let light = get_light();
 
     let mut processed_tris = config.triangles.clone().into_boxed_slice();
+    let mut processed_tris_shadow = config.triangles.clone().into_boxed_slice();
     let mut processed_light = light.clone().into_boxed_slice();
     // will contain purely the world space transform of the scene, used for shadow calculation
     let mut occlusion_testing = vec![[Point3d::default(); 3]; processed_tris.len()].into_boxed_slice();
     // this is kinda just a way around having to use an optional type in the signature of vertex_shader_pass. it's completely unused. FIXME
-    let mut dummy_buffer = vec![[Point3d::default(); 3]; processed_light.len()].into_boxed_slice();
+    let mut dummy1 = vec![[Point3d::default(); 3]; light.len()].into_boxed_slice();
+    let mut dummy2 = light.clone().into_boxed_slice().clone();
     let mut buf = Buffer {
         color: vec![0; (config.width * config.height) as usize * COLOR_BUF_CHANNELS].into_boxed_slice(),
         depth: vec![DEPTH_INIT; (config.width * config.height) as usize].into_boxed_slice(),
+        shadow_depth: vec![DEPTH_INIT; (config.shadow_buf_width * config.shadow_buf_height) as usize].into(),
     };
 
     let mut pool = Pool::new(config.render_threads);
@@ -158,6 +162,7 @@ fn start_interactive(mut config: Config<'static>) {
     let mut last_instant = Instant::now();
     let mut last_frame = Instant::now();
     let mut hold_wireframe = false;
+    let mut show_shadow_depth = false;
 
     let mut camera = Camera::new(Point3d::origin(), 0.0, 0.0);
 
@@ -170,14 +175,18 @@ fn start_interactive(mut config: Config<'static>) {
                 window.set_title(&format!("Renderer | {} FPS", (1.0 / frame_time).trunc()));
 
                 // vertex shader + misc
-                let (model, view, proj) = get_matrices(&config, Some(&camera));
+                let (model, view, proj, shadow_view, shadow_proj) = get_matrices(&config, Some(&camera));
 
                 let uniforms = renderer::Uniforms {
                     model,
                     view,
                     proj,
+                    shadow_view,
+                    shadow_proj,
                     inv_view: view.inverse(),
                     inv_proj: proj.inverse(),
+                    shadow_inv_view: shadow_view.inverse(),
+                    shadow_inv_proj: shadow_proj.inverse(),
                     near_clipping_plane: config.n,
                     light_pos: config.light_pos,
                     cam_pos: camera.loc,
@@ -188,26 +197,83 @@ fn start_interactive(mut config: Config<'static>) {
                     light_dissipation: config.light_dissipation,
                     shininess: config.shininess,
                     legacy: config.legacy,
-                    render_shadows: config.render_shadows,
+                    shadow_mode: config.shadow_mode,
+                    shadow_buf_width: config.shadow_buf_width,
+                    shadow_buf_height: config.shadow_buf_height,
+                    tan_theta: (config.fov.to_radians() / config.height as f64).tan(), // tan of the angle between two pixels
                     tex_sample_lerp: config.tex_sample_lerp,
                     wireframe: hold_wireframe,
                 };
 
-                vertex_shader_pass(&config.triangles, &mut processed_tris, &mut occlusion_testing, &uniforms, dims, Some(&mut pool), config.render_threads);
-                update_light(&light, &mut processed_light, &mut dummy_buffer, config.light_pos, config.light_scale, &view, &proj, config.n, dims);
+                // println!("{}", uniforms.tan_theta.atan().to_degrees());
+
+                vertex_shader_pass(
+                    &config.triangles,
+                    &mut processed_tris,
+                    &mut processed_tris_shadow,
+                    &mut occlusion_testing,
+                    &uniforms, dims,
+                    Some(&mut pool), config.render_threads
+                );
+
+                update_light(
+                    &light, &mut processed_light,
+                    &mut dummy1, &mut dummy2, config.light_pos,
+                    config.light_scale, &view,
+                    &proj, config.n, dims
+                );
+
                 clear(&mut buf, config.clear_color);
                 // end vertex shader + misc
 
                 // rasterize
                 let chunk_size_y = config.height / config.render_threads;
+                let chunk_size_y_shadow = config.shadow_buf_height / config.render_threads;
+
+                let shadow_depth_chunks = buf.shadow_depth.chunks_mut((chunk_size_y_shadow * config.shadow_buf_width) as usize);
+                let occlusion_dummy = [];
+
                 let color_chunks = buf.color.chunks_mut((chunk_size_y * dims.0) as usize * COLOR_BUF_CHANNELS);
                 let depth_chunks = buf.depth.chunks_mut((chunk_size_y * dims.0) as usize);
+
+                if config.shadow_mode == 2 {
+                    pool.scoped(|spawner| {
+                        for (i, shadow_depth) in shadow_depth_chunks.enumerate() {
+                            let chunk_height = shadow_depth.len() as u32 / config.shadow_buf_width;
+                            let mut sub_buf = SubBuffer {
+                                color: None,
+                                depth: shadow_depth,
+                                dims: (config.shadow_buf_width, chunk_height),
+                                start_y: i as u32 * chunk_size_y_shadow,
+                            };
+
+                            let processed_tris_shadow = processed_tris_shadow.as_ref();
+                            let uniforms = &uniforms;
+                            spawner.execute(move || {
+                                for tri in processed_tris_shadow {
+                                    match &tri.clip {
+                                        Clip::Zero => {},
+                                        Clip::One(second_triangle) => {
+                                            renderer::rasterize(&mut sub_buf, &second_triangle, &occlusion_dummy, None, &uniforms.shadow_inv_view, &uniforms.shadow_inv_proj, uniforms);
+                                        }
+                                        Clip::Two => {}, // the clipped triangle has replaced the original, we can continue normally
+                                        Clip::Three => continue,
+                                    }
+
+                                    renderer::rasterize(&mut sub_buf, tri, &occlusion_dummy, None, &uniforms.shadow_inv_view, &uniforms.shadow_inv_proj, uniforms);
+                                }
+                            });
+                        }
+                    });
+                }
+
+                // separate the loops to allow for the automatic drop of `shadow_depth_chunks`, we must borrow it immutably
 
                 pool.scoped(|spawner| {
                     for (i, (color, depth)) in color_chunks.zip(depth_chunks).enumerate() {
                         let chunk_height = depth.len() as u32 / dims.0;
                         let mut sub_buf = SubBuffer {
-                            color,
+                            color: Some(color),
                             depth,
                             dims: (dims.0, chunk_height), // all chunks are the same width, but not neccassarily the same height
                             start_y: i as u32 * chunk_size_y,
@@ -216,19 +282,20 @@ fn start_interactive(mut config: Config<'static>) {
                         let processed_tris = processed_tris.as_ref();
                         let processed_light = processed_light.as_ref();
                         let occlusion_testing = occlusion_testing.as_ref();
+                        let shadow_depth = &buf.shadow_depth;
                         let uniforms = &uniforms;
                         spawner.execute(move || {
                             for tri in processed_tris.iter().chain(processed_light.iter()) {
                                 match &tri.clip {
                                     Clip::Zero => {},
                                     Clip::One(second_triangle) => {
-                                        renderer::rasterize(&mut sub_buf, &second_triangle, &occlusion_testing, uniforms);
+                                        renderer::rasterize(&mut sub_buf, &second_triangle, &occlusion_testing, Some(shadow_depth), &uniforms.inv_view, &uniforms.inv_proj, uniforms);
                                     }
                                     Clip::Two => {}, // the clipped triangle has replaced the original, we can continue normally
                                     Clip::Three => continue,
                                 }
 
-                                renderer::rasterize(&mut sub_buf, tri, &occlusion_testing, uniforms);
+                                renderer::rasterize(&mut sub_buf, tri, &occlusion_testing, Some(shadow_depth), &uniforms.inv_view, &uniforms.inv_proj, uniforms);
                             }
                         });
                     }
@@ -237,7 +304,11 @@ fn start_interactive(mut config: Config<'static>) {
 
                 // present
                 let pixels = frame_buffer.frame_mut();
-                flip_and_copy(&buf, pixels, dims);
+                if show_shadow_depth {
+                    color_from_shadow(&buf, pixels, (config.shadow_buf_width, config.shadow_buf_height));
+                } else {
+                    flip_and_copy(&buf, pixels, dims);
+                }
 
                 if let Err(e) = frame_buffer.render() {
                     println!("{}", e);
@@ -287,10 +358,18 @@ fn start_interactive(mut config: Config<'static>) {
             if input.key_held(KeyCode::KeyR) {
                 config.light_pos = camera.loc;
                 config.light_pos.y -= config.light_scale;
+                config.light_yaw = camera.yaw;
+                config.light_pitch = camera.pitch;
             }
 
             if input.key_held(KeyCode::KeyF) {
                 println!("Camera position: ({}, {}, {})", camera.loc.x, camera.loc.y, camera.loc.z);
+            }
+
+            if input.key_held(KeyCode::KeyV) {
+                show_shadow_depth = true;
+            } else {
+                show_shadow_depth = false;
             }
 
             hold_wireframe = if config.wireframe { !input.key_held(KeyCode::KeyC) } else { input.key_held(KeyCode::KeyC) };
@@ -308,6 +387,29 @@ fn clear(buf: &mut Buffer, color: [u8; 3]) {
 
     for pix in buf.depth.iter_mut() {
         *pix = DEPTH_INIT;
+    }
+
+    for pix in buf.shadow_depth.iter_mut() {
+        *pix = DEPTH_INIT;
+    }
+}
+
+fn color_from_shadow(buf: &Buffer, frame: &mut [u8], dims: (u32, u32)) {
+    for y in 0..dims.1 - 10 {
+        for x in 0..dims.0 - 10 {
+            if x % 2 == 0 && y % 2 == 0 {
+                let index1 = (((y) * dims.0) + (x)) as usize;
+                let index = (((y / 4) * dims.0) + (x / 2)) as usize;
+
+                if index >= 1000000 {
+                    continue;
+                }
+                frame[index * 4] = (buf.shadow_depth[index1] * 255.0) as u8;
+                frame[index * 4 + 1] = (buf.shadow_depth[index1] * 255.0) as u8;
+                frame[index * 4 + 2] = (buf.shadow_depth[index1] * 255.0) as u8;
+                frame[index * 4 + 3] = renderer::FULLY_OPAQUE;
+            }
+        }
     }
 }
 
@@ -432,7 +534,17 @@ fn get_light() -> Vec<renderer::Triangle<'static>> {
     out
 }
 
-fn update_light<'a>(light: &[renderer::Triangle<'a>], processed_light: &mut [renderer::Triangle<'a>], dummy_buffer: &mut [[Point3d; 3]], light_pos: Point3d, light_scale: f64, view: &Mat4f, proj: &Mat4f, n: f64, dims: (u32, u32)) {
+fn update_light<'a>(
+    light: &[renderer::Triangle<'a>],
+    processed_light: &mut [renderer::Triangle<'a>],
+    dummy1: &mut [[Point3d; 3]],
+    dummy2: &mut [renderer::Triangle<'a>],
+    light_pos: Point3d,
+    light_scale: f64,
+    view: &Mat4f,
+    proj: &Mat4f,
+    n: f64, dims: (u32, u32)
+) {
     let uniforms = renderer::Uniforms {
         model: Mat4f::from_trans_scale(light_pos.x, light_pos.y, light_pos.z, light_scale),
         view: *view,
@@ -443,25 +555,30 @@ fn update_light<'a>(light: &[renderer::Triangle<'a>], processed_light: &mut [ren
         ..Default::default()
     };
 
-    vertex_shader_pass(light, processed_light, dummy_buffer, &uniforms, dims, None, 0)
+    vertex_shader_pass(light, processed_light, dummy2, dummy1, &uniforms, dims, None, 0)
 }
 
 fn render_to_image(config: &Config, save_name: &str) {
     let mut buf = Buffer {
         color: vec![0; (config.width * config.height) as usize * COLOR_BUF_CHANNELS].into_boxed_slice(),
         depth: vec![DEPTH_INIT; (config.width * config.height) as usize].into_boxed_slice(),
+        shadow_depth: vec![DEPTH_INIT; (config.shadow_buf_width * config.shadow_buf_height) as usize].into_boxed_slice(),
     };
     clear(&mut buf, config.clear_color);
 
     let dims = (config.width, config.height);
 
-    let (model, view, proj) = get_matrices(&config, None);
+    let (model, view, proj, shadow_view, shadow_proj) = get_matrices(&config, None);
     let uniforms = renderer::Uniforms {
         model,
         view,
         proj,
+        shadow_view,
+        shadow_proj,
         inv_view: view.inverse(),
         inv_proj: proj.inverse(),
+        shadow_inv_view: shadow_view.inverse(),
+        shadow_inv_proj: shadow_proj.inverse(),
         near_clipping_plane: config.n,
         light_pos: config.light_pos,
         cam_pos: Point3d::origin(),
@@ -472,10 +589,15 @@ fn render_to_image(config: &Config, save_name: &str) {
         light_dissipation: config.light_dissipation,
         shininess: config.shininess,
         legacy: config.legacy,
-        render_shadows: config.render_shadows,
+        shadow_mode: config.shadow_mode,
+        shadow_buf_width: config.shadow_buf_width,
+        shadow_buf_height: config.shadow_buf_height,
+        tan_theta: (config.fov.to_radians() / config.height as f64).tan(), // tan of the angle between two pixels
         tex_sample_lerp: config.tex_sample_lerp,
         wireframe: config.wireframe,
     };
+
+    println!("{}", uniforms.tan_theta.atan().to_degrees());
 
     let tri_count = config.triangles.len();
 
@@ -485,8 +607,9 @@ fn render_to_image(config: &Config, save_name: &str) {
     }
 
     let mut processed_tris = config.triangles.clone().into_boxed_slice();
+    let mut processed_tris_shadow = config.triangles.clone().into_boxed_slice();
     let mut occlusion_testing = vec![[Point3d::default(); 3]; processed_tris.len()];
-    vertex_shader_pass(&config.triangles, &mut processed_tris, &mut occlusion_testing, &uniforms, dims, None, 0);
+    vertex_shader_pass(&config.triangles, &mut processed_tris, &mut processed_tris_shadow, &mut occlusion_testing, &uniforms, dims, None, 0);
 
     if show_progress {
         println!("Done!");
@@ -503,7 +626,7 @@ fn render_to_image(config: &Config, save_name: &str) {
         for (i, (color, depth)) in color_chunks.zip(depth_chunks).enumerate() {
             let chunk_height = depth.len() as u32 / dims.0;
             let mut sub_buf = SubBuffer {
-                color,
+                color: Some(color),
                 depth,
                 dims: (dims.0, chunk_height), // all chunks are the same width, but not neccassarily the same height
                 start_y: i as u32 * chunk_size_y,
@@ -512,6 +635,7 @@ fn render_to_image(config: &Config, save_name: &str) {
             let threads_left = &threads_left;
             let processed_tris = processed_tris.as_ref();
             let occlusion_testing = occlusion_testing.as_ref();
+            let shadow_depth = &buf.shadow_depth;
             let uniforms = &uniforms;
             spawner.spawn(move || {
                 let mut pixels_shaded = 0;
@@ -531,13 +655,13 @@ fn render_to_image(config: &Config, save_name: &str) {
                     match &tri.clip {
                         Clip::Zero => {},
                         Clip::One(second_triangle) => {
-                            pixels_shaded += renderer::rasterize(&mut sub_buf, &second_triangle, &occlusion_testing, uniforms);
+                            pixels_shaded += renderer::rasterize(&mut sub_buf, &second_triangle, &occlusion_testing, Some(shadow_depth), &uniforms.inv_view, &uniforms.inv_proj, uniforms);
                         }
                         Clip::Two => {},
                         Clip::Three => continue,
                     }
 
-                    pixels_shaded += renderer::rasterize(&mut sub_buf, tri, &occlusion_testing, uniforms);
+                    pixels_shaded += renderer::rasterize(&mut sub_buf, tri, &occlusion_testing, Some(shadow_depth), &uniforms.inv_view, &uniforms.inv_proj, uniforms);
                 }
 
                 let mut threads_left = threads_left.lock().expect("Failed to obtain threads_left lock");
@@ -619,9 +743,9 @@ fn get_tex(mat: &str) -> Option<RgbaImage> {
     None
 }
 
-fn get_matrices(config: &Config, camera: Option<&Camera>) -> (Mat4f, Mat4f, Mat4f) {
+fn get_matrices(config: &Config, camera: Option<&Camera>) -> (Mat4f, Mat4f, Mat4f, Mat4f, Mat4f) {
     if config.legacy {
-        return (Mat4f::new(), Mat4f::new(), Mat4f::new());
+        return (Mat4f::new(), Mat4f::new(), Mat4f::new(), Mat4f::new(), Mat4f::new());
     }
 
     let trans = Mat4f::from_trans_scale(config.trans_x, config.trans_y, config.trans_z, config.scale);
@@ -639,16 +763,30 @@ fn get_matrices(config: &Config, camera: Option<&Camera>) -> (Mat4f, Mat4f, Mat4
         Mat4f::new()
     };
 
+    let shadow_view = if config.shadow_mode == 2 {
+        math::view(&config.light_pos, config.light_yaw, config.light_pitch)
+    } else {
+        Mat4f::new()
+    };
+
     let perspective = math::get_perspective(config.fov, config.width as f64 / config.height as f64, config.n, config.f);
     let proj = math::frustum(&perspective);
 
-    (model, view, proj)
+    let shadow_proj = if config.shadow_mode == 2 {
+        let perspective = math::get_perspective(config.shadow_render_fov, config.shadow_buf_width as f64 / config.shadow_buf_height as f64, config.n, config.f); // NOTE: careful with n and f
+        math::frustum(&perspective)
+    } else {
+        Mat4f::new()
+    };
+
+    (model, view, proj, shadow_view, shadow_proj)
 }
 
 // processed_tris will be filled with the output of the vertex shader
 fn vertex_shader_pass<'a>(
     tris: &[renderer::Triangle<'a>],
     processed_tris: &mut [renderer::Triangle<'a>],
+    processed_tris_shadow: &mut [renderer::Triangle<'a>],
     occlusion_testing: &mut [[Point3d; 3]],
     u: &renderer::Uniforms,
     dims: (u32, u32),
@@ -656,36 +794,62 @@ fn vertex_shader_pass<'a>(
     threads: u32,
 ) {
     assert_eq!(tris.len(), processed_tris.len());
+    assert_eq!(tris.len(), processed_tris_shadow.len());
+    assert_eq!(tris.len(), occlusion_testing.len());
 
     if let Some(pool) = pool {
         let chunk_size = (tris.len() / threads as usize).max(1);
         pool.scoped(|spawner| {
             let chunks = tris.chunks(chunk_size);
             let p_chunks = processed_tris.chunks_mut(chunk_size);
+            let p_shadow_chunks = processed_tris_shadow.chunks_mut(chunk_size);
             let occlusion_chunks = occlusion_testing.chunks_mut(chunk_size);
-            for ((chunk, p_chunk), occlusion_chunk) in chunks.zip(p_chunks).zip(occlusion_chunks) {
+
+            for (
+                ((chunk, p_chunk),
+                p_shadow_chunk),
+                occlusion_chunk
+            ) in chunks.zip(p_chunks).zip(p_shadow_chunks).zip(occlusion_chunks) {
                 spawner.execute(move || {
-                    for ((tri, processed_tri), occlusion_test) in chunk.iter().zip(p_chunk.iter_mut()).zip(occlusion_chunk.iter_mut()) {
-                        process_tri(tri, processed_tri, occlusion_test, u, dims);
+                    for (((tri, processed_tri), processed_tri_shadow), occlusion_test) in chunk.iter().zip(p_chunk.iter_mut()).zip(p_shadow_chunk.iter_mut()).zip(occlusion_chunk.iter_mut()) {
+                        process_tri(tri, processed_tri, processed_tri_shadow, occlusion_test, u, dims);
                     }
                 });
             }
         });
     } else {
-        for ((tri, processed_tri), occlusion_test) in tris.iter().zip(processed_tris.iter_mut()).zip(occlusion_testing.iter_mut()) {
-            process_tri(tri, processed_tri, occlusion_test, u, dims);
+        for (((tri, processed_tri), processed_tri_shadow), occlusion_test) in tris.iter().zip(processed_tris.iter_mut()).zip(processed_tris_shadow.iter_mut()).zip(occlusion_testing.iter_mut()) {
+            process_tri(tri, processed_tri, processed_tri_shadow, occlusion_test, u, dims);
         }
     }
 
-    fn process_tri<'a>(tri: &renderer::Triangle<'a>, processed_tri: &mut renderer::Triangle<'a>, occlusion_test: &mut [Point3d; 3], u: &renderer::Uniforms, dims: (u32, u32)) {
-        let (mut processed, occlusion) = renderer::vertex_shader(tri, u, dims);
-        renderer::sort_tri_points_y(&mut processed);
-        *occlusion_test = occlusion;
+    fn process_tri<'a>(
+        tri: &renderer::Triangle<'a>,
+        processed_tri: &mut renderer::Triangle<'a>,
+        processed_tri_shadow: &mut renderer::Triangle<'a>,
+        occlusion_test: &mut [Point3d; 3],
+        u: &renderer::Uniforms,
+        dims: (u32, u32)
+    ) {
+        let (mut processed, occlusion) = renderer::vertex_shader(tri, &u.model, &u.view, &u.proj, &u.inv_view, u, dims);
 
+        renderer::sort_tri_points_y(&mut processed);
         if let Clip::One(tri) = &mut processed.clip {
             renderer::sort_tri_points_y(tri);
         }
 
+        *occlusion_test = occlusion;
         *processed_tri = processed;
+
+        if u.shadow_mode == 2 {
+            let (mut processed_shadow, _) = renderer::vertex_shader(tri, &u.model, &u.shadow_view, &u.shadow_proj, &u.shadow_inv_view, u, (u.shadow_buf_width, u.shadow_buf_height));
+
+            renderer::sort_tri_points_y(&mut processed_shadow);
+            if let Clip::One(tri) = &mut processed_shadow.clip {
+                renderer::sort_tri_points_y(tri);
+            }
+
+            *processed_tri_shadow = processed_shadow;
+        }
     }
 }

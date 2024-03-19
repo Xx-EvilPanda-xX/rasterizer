@@ -600,6 +600,18 @@ impl Display for Mat4f {
     }
 }
 
+impl Display for Vec3f {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!("<{:.3}, {:.3}, {:.3}>", self.x, self.y, self.z))
+    }
+}
+
+impl Display for Point3d {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!("({:.3}, {:.3}, {:.3})", self.x, self.y, self.z))
+    }
+}
+
 impl Vec3f {
     pub fn new(x: f64, y: f64, z: f64) -> Self {
         Self {

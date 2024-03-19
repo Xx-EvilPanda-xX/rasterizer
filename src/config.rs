@@ -24,6 +24,8 @@ pub struct Config<'a> {
     pub trans_y: f64,
     pub trans_z: f64,
     pub light_pos: Point3d,
+    pub light_yaw: f64,
+    pub light_pitch: f64,
     pub light_scale: f64,
     pub ambient: f64,
     pub diffuse: f64,
@@ -31,7 +33,10 @@ pub struct Config<'a> {
     pub light_intensity: f64,
     pub light_dissipation: f64,
     pub shininess: u32,
-    pub render_shadows: bool,
+    pub shadow_mode: u32, // 0: None 1: Perfect 2: Approx
+    pub shadow_buf_width: u32,
+    pub shadow_buf_height: u32,
+    pub shadow_render_fov: f64,
     pub tex_sample_lerp: bool,
     pub render_threads: u32,
     pub show_progress: bool,
@@ -78,6 +83,8 @@ impl<'a> Config<'a> {
         let trans_y = eval(field("trans_y", &mut img_config), legacy, "0.0");
         let trans_z = eval(field("trans_z", &mut img_config), legacy, "0.0");
         let light_pos = eval(field("light_pos", &mut img_config), legacy, "[0.0,0.0,0.0]");
+        let light_yaw = eval(field("light_yaw", &mut img_config), legacy, "0.0");
+        let light_pitch = eval(field("light_pitch", &mut img_config), legacy, "0.0");
         let light_scale = eval(field("light_scale", &mut img_config), legacy, "0.0");
         let ambient = eval(field("ambient", &mut img_config), legacy, "1.0");
         let diffuse = eval(field("diffuse", &mut img_config), legacy, "0.0");
@@ -85,7 +92,10 @@ impl<'a> Config<'a> {
         let light_intensity = eval(field("light_intensity", &mut img_config), legacy, "1.0");
         let light_dissipation = eval(field("light_dissipation", &mut img_config), legacy, "1.0");
         let shininess = eval(field("shininess", &mut img_config), legacy, "0");
-        let render_shadows = eval(field("render_shadows", &mut img_config), legacy, "false");
+        let shadow_mode = eval(field("shadow_mode", &mut img_config), legacy, "0");
+        let shadow_buf_width = eval(field("shadow_buf_width", &mut img_config), legacy, "0");
+        let shadow_buf_height = eval(field("shadow_buf_height", &mut img_config), legacy, "0");
+        let shadow_render_fov = eval(field("shadow_render_fov", &mut img_config), legacy, "0.0");
         let tex_sample_lerp = eval(field("tex_sample_lerp", &mut img_config), legacy, "false");
         let render_threads = eval(field("render_threads", &mut img_config), legacy, "16");
         let show_progess = eval(field("show_progress", &mut img_config), legacy, "false");
@@ -120,6 +130,8 @@ impl<'a> Config<'a> {
             trans_y: trans_y.parse().expect("Failed to parse trans_y"),
             trans_z: trans_z.parse().expect("Failed to parse trans_z"),
             light_pos: Point3d::from_arr(parse_arr(light_pos)),
+            light_yaw: light_yaw.parse().expect("Failed to parse light_yaw"),
+            light_pitch: light_pitch.parse().expect("Failed to parse light_pitch"),
             light_scale: light_scale.parse().expect("Failed to parse light_scale"),
             ambient: ambient.parse().expect("Failed to parse ambient"),
             diffuse: diffuse.parse().expect("Failed to parse diffuse"),
@@ -127,7 +139,10 @@ impl<'a> Config<'a> {
             light_intensity: light_intensity.parse().expect("Failed to parse light_intensity"),
             light_dissipation: light_dissipation.parse().expect("Failed to parse light_dissipation"),
             shininess: shininess.parse().expect("Failed to parse shininess"),
-            render_shadows: render_shadows.parse().expect("Failed to parse render_shadows"),
+            shadow_mode: shadow_mode.parse().expect("Failed to parse shadow_mode"),
+            shadow_buf_width: shadow_buf_width.parse().expect("Failed to parse shadow_buf_width"),
+            shadow_buf_height: shadow_buf_height.parse().expect("Failed to parse shadow_buf_height"),
+            shadow_render_fov: shadow_render_fov.parse().expect("Failed to parse shadow_render_fov"),
             tex_sample_lerp: tex_sample_lerp.parse().expect("Failed to parse tex_sample_lerp"),
             render_threads: render_threads.parse().expect("Failed to parse render_threads"),
             show_progress: show_progess.parse().expect("Failed to parse show_progress"),
@@ -211,8 +226,6 @@ height = u32
 clear_color = [u8, u8, u8]
 legacy = bool
 fullscreen = bool
-color_freq = f64
-shade_mode = u32
 fov = f64
 n = f64
 f = f64
@@ -224,6 +237,8 @@ trans_x = f64
 trans_y = f64
 trans_z = f64
 light_pos = [f64, f64, f64]
+light_yaw = f64
+light_pitch = f64
 light_scale = f64
 ambient = f64
 diffuse = f64
@@ -231,7 +246,10 @@ specular = f64
 light_intensity = f64
 light_dissipation = f64
 shininess = u32
-render_shadows = bool
+shadow_mode = u32
+shadow_buf_width = u32
+shadow_buf_height = u32
+shadow_render_fov = f64
 tex_sample_lerp = bool
 render_threads = u32
 show_progress = bool
@@ -337,21 +355,25 @@ fn load_obj<'a>(obj: &str, mtls: &'a HashMap<String, MtlData>, color_freq: f64, 
             let mut vt = ([0; 3], false);
             let mut vn = ([0; 3], false);
 
-            for (i, &string) in idx.iter().enumerate() {
+            for (j, &string) in idx.iter().enumerate() {
                 let mut s = string.split('/');
 
-                v[i] = s.next().expect(&format!("Polygon indices must contain at least a vertex position index! line: {}", i)).parse::<u32>().expect(&format!("Failed to parse vertex position index. line: {}", i)) - 1;
+                v[j] = s.next().expect(&format!("Polygon indices must contain at least a vertex position index! line: {}", j)).parse::<u32>().expect(&format!("Failed to parse vertex position index. line: {}", j)) - 1;
 
                 if let Some(s) = s.next() {
-                    let vt_index = s.parse::<u32>().expect(&format!("Failed to parse vertex texture coordinate index: line {}", i));
-                    vt.0[i] = vt_index - 1;
-                    vt.1 = true;
+                    if s != "" {
+                        let vt_index = s.parse::<u32>().expect(&format!("Failed to parse vertex texture coordinate index: line {}", j));
+                        vt.0[j] = vt_index - 1;
+                        vt.1 = true;
+                    }
                 }
 
                 if let Some(s) = s.next() {
-                    let vn_index = s.parse::<u32>().expect(&format!("Failed to parse vertex normal vector index: line {}", i));
-                    vn.0[i] = vn_index - 1;
-                    vn.1 = true;
+                    if s != "" {
+                        let vn_index = s.parse::<u32>().expect(&format!("Failed to parse vertex normal vector index: line {}", j));
+                        vn.0[j] = vn_index - 1;
+                        vn.1 = true;
+                    }
                 }
             }
 

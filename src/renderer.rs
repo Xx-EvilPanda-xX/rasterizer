@@ -56,8 +56,12 @@ pub struct Uniforms {
     pub model: Mat4f,
     pub view: Mat4f,
     pub proj: Mat4f,
+    pub shadow_view: Mat4f,
+    pub shadow_proj: Mat4f,
     pub inv_view: Mat4f,
     pub inv_proj: Mat4f,
+    pub shadow_inv_view: Mat4f,
+    pub shadow_inv_proj: Mat4f,
     pub near_clipping_plane: f64,
     pub light_pos: Point3d,
     pub cam_pos: Point3d,
@@ -68,7 +72,10 @@ pub struct Uniforms {
     pub light_intensity: f64,
     pub shininess: u32,
     pub legacy: bool,
-    pub render_shadows: bool,
+    pub shadow_mode: u32,
+    pub shadow_buf_width: u32,
+    pub shadow_buf_height: u32,
+    pub tan_theta: f64,
     pub tex_sample_lerp: bool,
     pub wireframe: bool,
 }
@@ -93,7 +100,7 @@ fn in_section_4(p: &Point2d) -> bool {
     p.x < 0.0
 }
 
-pub fn rasterize(buf: &mut SubBuffer, tri: &Triangle, occ: &[[Point3d; 3]], u: &Uniforms) -> u32 {
+pub fn rasterize(buf: &mut SubBuffer, tri: &Triangle, occ: &[[Point3d; 3]], shadow_depth: Option<&[f64]>, view_inv: &Mat4f, proj_inv: &Mat4f, u: &Uniforms) -> u32 {
     let dims = buf.dims;
     let (a, b, c) = (&tri.a.pos.into_2d(), &tri.b.pos.into_2d(), &tri.c.pos.into_2d());
 
@@ -121,6 +128,7 @@ pub fn rasterize(buf: &mut SubBuffer, tri: &Triangle, occ: &[[Point3d; 3]], u: &
     };
 
     let mut pixels_shaded = 0;
+    let color_buf_exists = buf.color.is_some();
 
     let mut pixel = |x, y| {
         if x >= dims.0 || y < buf.start_y || y >= buf.start_y + dims.1 {
@@ -133,16 +141,19 @@ pub fn rasterize(buf: &mut SubBuffer, tri: &Triangle, occ: &[[Point3d; 3]], u: &
         // we can safely pass in 0 for the z here because we will never being solving for anything other than z with this plane
         let depth = lerp_fast(&planes.pos_z, x as f64, y as f64, 0.0);
         if depth < buf.depth[i] && depth >= super::SCREEN_Z {
-            let color = pixel_shader(tri, occ, u, &planes, x, y);
+            if let Some(color_buf) = &mut buf.color {
+                let color = pixel_shader(tri, occ, shadow_depth.unwrap(), view_inv, proj_inv, u, &planes, x, y);
 
-            // discard transparency
-            if color[3] == 0 {
-                return;
+                // discard transparency
+                if color[3] == 0 {
+                    return;
+                }
+
+                color_buf[i * COLOR_BUF_CHANNELS] = color[0];
+                color_buf[i * COLOR_BUF_CHANNELS + 1] = color[1];
+                color_buf[i * COLOR_BUF_CHANNELS + 2] = color[2];
             }
 
-            buf.color[i * COLOR_BUF_CHANNELS] = color[0];
-            buf.color[i * COLOR_BUF_CHANNELS + 1] = color[1];
-            buf.color[i * COLOR_BUF_CHANNELS + 2] = color[2];
             buf.depth[i] = depth;
             pixels_shaded += 1;
         }
@@ -175,38 +186,36 @@ pub fn rasterize(buf: &mut SubBuffer, tri: &Triangle, occ: &[[Point3d; 3]], u: &
 
         let mut current_y = start_y;
 
-        let mut advance_line = |current_x: i32, current_y: &mut i32, target_y: f64| {
-            let mut diff = *current_y as f64 - target_y;
+        for current_x in start_x..=end_x {
+            let target_y = solve_y(&line, current_x as f64);
+            let mut diff = current_y as f64 - target_y;
 
             // rule out any negative pixels because casting to u32 causes problems
-            if current_x >= 0 && *current_y >= 0 && diff.abs() < 0.5 {
-                pixel(current_x as u32, *current_y as u32);
+            if current_x >= 0 && current_y >= 0 && diff.abs() < 0.5 {
+                pixel(current_x as u32, current_y as u32);
             }
 
             while diff.abs() > 0.5 {
                 if diff.is_sign_positive() {
-                    *current_y -= 1;
+                    current_y -= 1;
                 }
 
                 if diff.is_sign_negative() {
-                    *current_y += 1;
+                    current_y += 1;
                 }
 
                 // rule out any negative pixels because casting to u32 causes problems
-                if current_x >= 0 && *current_y >= 0 {
-                    pixel(current_x as u32, *current_y as u32);
+                if current_x >= 0 && current_y >= 0 {
+                    pixel(current_x as u32, current_y as u32);
                 }
 
-                diff = *current_y as f64 - target_y;
+                diff = current_y as f64 - target_y;
             }
-        };
-
-        for x in start_x..=end_x {
-            advance_line(x, &mut current_y, solve_y(&line, x as f64));
         }
     };
 
-    if u.wireframe {
+    // check for existent color buf since we dont want to ever do a wireframe shadow depth render
+    if u.wireframe && color_buf_exists {
         draw_line(a, b);
         draw_line(b, c);
         draw_line(a, c);
@@ -311,13 +320,21 @@ pub fn rasterize(buf: &mut SubBuffer, tri: &Triangle, occ: &[[Point3d; 3]], u: &
 }
 
 // takes triangle in model space and returns it in raster space, also returns pure model transform
-pub fn vertex_shader<'a>(tri: &Triangle<'a>, u: &Uniforms, dims: (u32, u32)) -> (Triangle<'a>, [Point3d; 3]) {
+pub fn vertex_shader<'a>(
+    tri: &Triangle<'a>,
+    model: &Mat4f,
+    view: &Mat4f,
+    proj: &Mat4f,
+    inv_view: &Mat4f,
+    u: &Uniforms,
+    dims: (u32, u32)
+) -> (Triangle<'a>, [Point3d; 3]) {
     let (a, b, c) = (&tri.a, &tri.b, &tri.c);
 
     // model transform
-    let mut pos_a = mul_point_matrix(&a.pos, &u.model);
-    let mut pos_b = mul_point_matrix(&b.pos, &u.model);
-    let mut pos_c = mul_point_matrix(&c.pos, &u.model);
+    let mut pos_a = mul_point_matrix(&a.pos, model);
+    let mut pos_b = mul_point_matrix(&b.pos, model);
+    let mut pos_c = mul_point_matrix(&c.pos, model);
 
     // save model space position
     let pos_world_a = pos_a;
@@ -325,14 +342,14 @@ pub fn vertex_shader<'a>(tri: &Triangle<'a>, u: &Uniforms, dims: (u32, u32)) -> 
     let pos_world_c = pos_c;
 
     // no non-uniform scaling is actually done to our points, so its fine to multiply normals by the model too.
-    let n_a = mul_point_matrix(&a.n.into_point(), &u.model.no_trans()).into_vec().normalize();
-    let n_b = mul_point_matrix(&b.n.into_point(), &u.model.no_trans()).into_vec().normalize();
-    let n_c = mul_point_matrix(&c.n.into_point(), &u.model.no_trans()).into_vec().normalize();
+    let n_a = mul_point_matrix(&a.n.into_point(), &model.no_trans()).into_vec().normalize();
+    let n_b = mul_point_matrix(&b.n.into_point(), &model.no_trans()).into_vec().normalize();
+    let n_c = mul_point_matrix(&c.n.into_point(), &model.no_trans()).into_vec().normalize();
 
     // view transform
-    pos_a = mul_point_matrix(&pos_a, &u.view);
-    pos_b = mul_point_matrix(&pos_b, &u.view);
-    pos_c = mul_point_matrix(&pos_c, &u.view);
+    pos_a = mul_point_matrix(&pos_a, view);
+    pos_b = mul_point_matrix(&pos_b, view);
+    pos_c = mul_point_matrix(&pos_c, view);
 
     // here we create vertices just for clipping (we might need to interpolate between attributes)
     // anything in clip space is left unused, but pos is used to store the view space position (clipping is done in view space)
@@ -387,11 +404,11 @@ pub fn vertex_shader<'a>(tri: &Triangle<'a>, u: &Uniforms, dims: (u32, u32)) -> 
             let lerp_val_b = (dist_3d(&b.pos, &inter2) / dist_3d(&b.pos, &c.pos)).sqrt();
 
             // 1st new triangle
-            tri_override = Some(make_clipped_triangle(a, b, c, tri.tex, &[a, b], &[(&inter2, lerp_val_b, ClipLerp::BC)], &u.inv_view));
+            tri_override = Some(make_clipped_triangle(a, b, c, tri.tex, &[a, b], &[(&inter2, lerp_val_b, ClipLerp::BC)], inv_view));
             Clip::One(
                 Box::new(
                     // 2nd new triangle
-                    make_clipped_triangle(a, b, c, tri.tex, &[a], &[(&inter1, lerp_val_a, ClipLerp::AC), (&inter2, lerp_val_b, ClipLerp::BC)], &u.inv_view)
+                    make_clipped_triangle(a, b, c, tri.tex, &[a], &[(&inter1, lerp_val_a, ClipLerp::AC), (&inter2, lerp_val_b, ClipLerp::BC)], inv_view)
                 )
             )
         }
@@ -410,7 +427,7 @@ pub fn vertex_shader<'a>(tri: &Triangle<'a>, u: &Uniforms, dims: (u32, u32)) -> 
             let lerp_val_c = dist_3d(&a.pos, &inter2).sqrt() / dist_3d(&a.pos, &c.pos).sqrt();
 
             // only new triangle
-            tri_override = Some(make_clipped_triangle(a, b, c, tri.tex, &[a], &[(&inter1, lerp_val_b, ClipLerp::AB), (&inter2, lerp_val_c, ClipLerp::AC)], &u.inv_view));
+            tri_override = Some(make_clipped_triangle(a, b, c, tri.tex, &[a], &[(&inter1, lerp_val_b, ClipLerp::AB), (&inter2, lerp_val_c, ClipLerp::AC)], inv_view));
             Clip::Two
         }
         3 => {
@@ -428,14 +445,14 @@ pub fn vertex_shader<'a>(tri: &Triangle<'a>, u: &Uniforms, dims: (u32, u32)) -> 
     // in the case of an override, we already have a half contructed triangle and simply need to complete it
     if let Some(mut tri) = tri_override {
         // do the same clip/raster space calculations for the clip override if it exsists (and the optional newly boxed triangle), then return it
-        clip_space_calc(tri.a.pos, &mut tri.a.pos, &mut tri.a.pos_clip, &u.proj, dims);
-        clip_space_calc(tri.b.pos, &mut tri.b.pos, &mut tri.b.pos_clip, &u.proj, dims);
-        clip_space_calc(tri.c.pos, &mut tri.c.pos, &mut tri.c.pos_clip, &u.proj, dims);
+        clip_space_calc(tri.a.pos, &mut tri.a.pos, &mut tri.a.pos_clip, proj, dims);
+        clip_space_calc(tri.b.pos, &mut tri.b.pos, &mut tri.b.pos_clip, proj, dims);
+        clip_space_calc(tri.c.pos, &mut tri.c.pos, &mut tri.c.pos_clip, proj, dims);
 
         if let Clip::One(tri) = &mut clip {
-            clip_space_calc(tri.a.pos, &mut tri.a.pos, &mut tri.a.pos_clip, &u.proj, dims);
-            clip_space_calc(tri.b.pos, &mut tri.b.pos, &mut tri.b.pos_clip, &u.proj, dims);
-            clip_space_calc(tri.c.pos, &mut tri.c.pos, &mut tri.c.pos_clip, &u.proj, dims);
+            clip_space_calc(tri.a.pos, &mut tri.a.pos, &mut tri.a.pos_clip, proj, dims);
+            clip_space_calc(tri.b.pos, &mut tri.b.pos, &mut tri.b.pos_clip, proj, dims);
+            clip_space_calc(tri.c.pos, &mut tri.c.pos, &mut tri.c.pos_clip, proj, dims);
         }
 
         tri.clip = clip;
@@ -445,9 +462,9 @@ pub fn vertex_shader<'a>(tri: &Triangle<'a>, u: &Uniforms, dims: (u32, u32)) -> 
         let mut pos_clip_b = Point3d::default();
         let mut pos_clip_c = Point3d::default();
 
-        clip_space_calc(pos_a, &mut pos_a, &mut pos_clip_a, &u.proj, dims);
-        clip_space_calc(pos_b, &mut pos_b, &mut pos_clip_b, &u.proj, dims);
-        clip_space_calc(pos_c, &mut pos_c, &mut pos_clip_c, &u.proj, dims);
+        clip_space_calc(pos_a, &mut pos_a, &mut pos_clip_a, proj, dims);
+        clip_space_calc(pos_b, &mut pos_b, &mut pos_clip_b, proj, dims);
+        clip_space_calc(pos_c, &mut pos_c, &mut pos_clip_c, proj, dims);
 
         (Triangle {
             a: Vertex {
@@ -602,7 +619,7 @@ a know x and y will result in a `NaN` or `inf`. The only way to solve this would
 dimensions and solve for w from a know x, y, and z, which im definetly not gonna do. (FIXED)
 */
 
-fn pixel_shader(tri: &Triangle, occ: &[[Point3d; 3]], u: &Uniforms, planes: &AttributePlanes, x1: u32, y1: u32) -> [u8; 4] {
+fn pixel_shader(tri: &Triangle, occ: &[[Point3d; 3]], shadow_depth: &[f64], inv_view: &Mat4f, inv_proj: &Mat4f, u: &Uniforms, planes: &AttributePlanes, x1: u32, y1: u32) -> [u8; 4] {
     let (x, y) = (x1 as f64, y1 as f64);
     const SPEC_COLOR: [u8; 4] = [255, 255, 255, 255];
 
@@ -615,9 +632,9 @@ fn pixel_shader(tri: &Triangle, occ: &[[Point3d; 3]], u: &Uniforms, planes: &Att
         );
 
         // position of our pixel in view space
-        let pix_world_pos = mul_point_matrix(&pix_clip_pos, &u.inv_proj);
+        let pix_world_pos = mul_point_matrix(&pix_clip_pos, inv_proj);
         // position of our pixel in world space
-        let pix_world_pos = mul_point_matrix(&pix_world_pos, &u.inv_view);
+        let pix_world_pos = mul_point_matrix(&pix_world_pos, inv_view);
         let (x_world, y_world, z_world) = (pix_world_pos.x, pix_world_pos.y, pix_world_pos.z);
 
         let norm = Vec3f::new(
@@ -647,8 +664,8 @@ fn pixel_shader(tri: &Triangle, occ: &[[Point3d; 3]], u: &Uniforms, planes: &Att
             tri.a.pos_clip.y * weights_clip.a + tri.b.pos_clip.y * weights_clip.b + tri.c.pos_clip.y * weights_clip.c,
             tri.a.pos_clip.z * weights_clip.a + tri.b.pos_clip.z * weights_clip.b + tri.c.pos_clip.z * weights_clip.c,
         );
-        let pix_world_pos = mul_point_matrix(&pix_clip_pos, &u.inv_proj);
-        let pix_world_pos = mul_point_matrix(&pix_world_pos, &u.inv_view);
+        let pix_world_pos = mul_point_matrix(&pix_clip_pos, inv_proj);
+        let pix_world_pos = mul_point_matrix(&pix_world_pos, inv_view);
         let weights_world = lerp_slow([&tri.a.pos_world, &tri.b.pos_world, &tri.c.pos_world], pix_world_pos.x, pix_world_pos.y);
 
         let base_color = if let Some(tex) = tri.tex {
@@ -674,7 +691,9 @@ fn pixel_shader(tri: &Triangle, occ: &[[Point3d; 3]], u: &Uniforms, planes: &Att
         (norm, pix_world_pos, base_color)
     };
 
-    let (ambient, diffuse, specular) = calc_lighting(&norm, &pix_world_pos, u, occ);
+    let debug = x1 == 10 && y1 == 300;
+
+    let (ambient, diffuse, specular) = calc_lighting(&norm, &pix_world_pos, u, occ, shadow_depth, debug);
     let ambient = mul_color(&base_color, ambient);
     let diffuse = mul_color(&base_color, diffuse);
     let specular = mul_color(&SPEC_COLOR, specular);
@@ -684,7 +703,7 @@ fn pixel_shader(tri: &Triangle, occ: &[[Point3d; 3]], u: &Uniforms, planes: &Att
     color
 }
 
-fn calc_lighting(norm: &Vec3f, pix_pos: &Point3d, u: &Uniforms, occ: &[[Point3d; 3]]) -> (f64, f64, f64) {
+fn calc_lighting(norm: &Vec3f, pix_pos: &Point3d, u: &Uniforms, occ: &[[Point3d; 3]], shadow_depth: &[f64], debug: bool) -> (f64, f64, f64) {
     // pixel to light
     let light_dir = (u.light_pos.into_vec() - pix_pos.into_vec()).normalize();
 
@@ -700,16 +719,17 @@ fn calc_lighting(norm: &Vec3f, pix_pos: &Point3d, u: &Uniforms, occ: &[[Point3d;
     let x = d / u.light_dissipation + 1.0;
     let diss = u.light_intensity / (x * x);
 
-    let shadow = if u.render_shadows {
-        shadow(occ, &u.light_pos, pix_pos)
-    } else {
-        1.0
+    let shadow = match u.shadow_mode {
+        0 => 1.0,
+        1 => perfect_shadow(occ, &u.light_pos, pix_pos),
+        2 => approx_shadow(shadow_depth, u, pix_pos, norm, debug),
+        _ => panic!("Invalid shadow mode"),
     };
 
     (ambient, diffuse * shadow * diss, specular * shadow * diss)
 }
 
-fn shadow(occ: &[[Point3d; 3]], light_pos: &Point3d, pix_pos: &Point3d) -> f64 {
+fn perfect_shadow(occ: &[[Point3d; 3]], light_pos: &Point3d, pix_pos: &Point3d) -> f64 {
     let line = line_3d_from_points(light_pos, pix_pos);
     let mut shadow = 1.0;
 
@@ -730,6 +750,76 @@ fn shadow(occ: &[[Point3d; 3]], light_pos: &Point3d, pix_pos: &Point3d) -> f64 {
     }
 
     shadow
+}
+
+fn approx_shadow(shadow_depth: &[f64], u: &Uniforms, pix_pos: &Point3d, norm: &Vec3f, debug: bool) -> f64 {
+
+    // position of the pixel in the clip space of the light source
+    let shadow_view_pos = mul_point_matrix(pix_pos, &u.shadow_view);
+    let shadow_proj_pos = mul_point_matrix(&shadow_view_pos, &u.shadow_proj);
+
+    if shadow_proj_pos.x > 1.0 || shadow_proj_pos.x < -1.0 || shadow_proj_pos.y > 1.0 || shadow_proj_pos.y < -1.0 || shadow_proj_pos.z > 1.0 {
+        return 0.0;
+    }
+
+    // retrieve z of the closest pixel to the camera at that x,y
+    let x = (((shadow_proj_pos.x + 1.0) / 2.0) * u.shadow_buf_width as f64) as usize;
+    let y = (((shadow_proj_pos.y + 1.0) / 2.0) * u.shadow_buf_height as f64) as usize;
+    let shadow_depth = shadow_depth[(y * u.shadow_buf_width as usize) + x];
+
+    if debug {
+        println!("\n\nshadow_depth: {shadow_depth}");
+    }
+
+    // convert to view space z
+    let shadow_pos_proj = Point3d::new(shadow_proj_pos.x, shadow_proj_pos.y, shadow_depth);
+    let shadow_depth_view = mul_point_matrix(&shadow_pos_proj, &u.shadow_inv_proj).z;
+
+    if debug {
+        println!("shadow_depth_view: {shadow_depth_view}");
+    }
+
+    // find pixel pos in view space
+    let pix_pos_view = mul_point_matrix(pix_pos, &u.shadow_view);
+
+    if debug {
+        println!("pix_pos_view: {pix_pos_view}");
+    }
+
+    // size of a pixel at the z of the shadow depth
+    let s = -shadow_depth_view * u.tan_theta;
+
+    // cos(angle between light to pixel and the normal)
+    let pix_to_light = Vec3f::new(0.0, 0.0, 1.0);
+    let norm_view = mul_point_matrix(&norm.into_point(), &u.shadow_view.no_trans()).into_vec(); // transform norm to shadow view space
+    let cos_theta = Vec3f::dot(&pix_to_light, &norm_view);
+
+    // calculate change in z to fully conceal all shadow map pixels under the polygon
+    // = s / cot(cos-1(cos_theta)) = s / (cos_theta / sqrt(1 - cos_theta^2)) = s*sqrt(1 - cos_theta^2) / cos_theta
+    let delta = s * (1.0 - cos_theta*cos_theta).sqrt() / cos_theta;
+
+    if debug {
+        println!("s: {s}");
+        println!("pix_to_light: {pix_to_light}");
+        println!("norm_view: {norm_view}");
+        println!("cos_theta: {cos_theta}");
+        println!("delta: {delta}");
+    }
+
+    // println!("{}", delta);
+
+    let diff = pix_pos_view.z - (shadow_depth_view - delta);
+    // let diff = shadow_proj_pos.z - (shadow_depth + 0.001);
+
+    // if debug {
+    //     println!("diff: {diff}");
+    // }
+
+    if diff > 0.0 { // TODO: add a variable amount proportional to distance from cam
+        0.0
+    } else {
+        1.0
+    }
 }
 
 // all parameters must be normalized
