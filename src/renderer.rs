@@ -75,7 +75,7 @@ pub struct Uniforms {
     pub shadow_mode: u32,
     pub shadow_buf_width: u32,
     pub shadow_buf_height: u32,
-    pub tan_theta: f64,
+    pub shadow_perspective: Option<Perspective>,
     pub tex_sample_lerp: bool,
     pub wireframe: bool,
 }
@@ -691,7 +691,7 @@ fn pixel_shader(tri: &Triangle, occ: &[[Point3d; 3]], shadow_depth: &[f64], inv_
         (norm, pix_world_pos, base_color)
     };
 
-    let debug = x1 == 10 && y1 == 300;
+    let debug = x1 == 10 && y1 == 11300;
 
     let (ambient, diffuse, specular) = calc_lighting(&norm, &pix_world_pos, u, occ, shadow_depth, debug);
     let ambient = mul_color(&base_color, ambient);
@@ -787,16 +787,21 @@ fn approx_shadow(shadow_depth: &[f64], u: &Uniforms, pix_pos: &Point3d, norm: &V
     }
 
     // size of a pixel at the z of the shadow depth
-    let s = -shadow_depth_view * u.tan_theta;
+    let per = u.shadow_perspective.as_ref().expect("Missing shadow perspective");
+    let s = (2.0 * per.t * -shadow_depth_view) / (per.n * u.shadow_buf_height as f64);
 
     // cos(angle between light to pixel and the normal)
     let pix_to_light = Vec3f::new(0.0, 0.0, 1.0);
     let norm_view = mul_point_matrix(&norm.into_point(), &u.shadow_view.no_trans()).into_vec(); // transform norm to shadow view space
     let cos_theta = Vec3f::dot(&pix_to_light, &norm_view);
 
+    // tiny value to add to delta to account for limited precision
+    const MU: f64 = 0.000001;
+
     // calculate change in z to fully conceal all shadow map pixels under the polygon
     // = s / cot(cos-1(cos_theta)) = s / (cos_theta / sqrt(1 - cos_theta^2)) = s*sqrt(1 - cos_theta^2) / cos_theta
-    let delta = s * (1.0 - cos_theta*cos_theta).sqrt() / cos_theta;
+    // let delta = s * (1.0 - cos_theta*cos_theta).sqrt() / cos_theta;
+    let delta = s * cos_theta.acos().tan();
 
     if debug {
         println!("s: {s}");
@@ -808,14 +813,14 @@ fn approx_shadow(shadow_depth: &[f64], u: &Uniforms, pix_pos: &Point3d, norm: &V
 
     // println!("{}", delta);
 
-    let diff = pix_pos_view.z - (shadow_depth_view - delta);
+    let diff = pix_pos_view.z - (shadow_depth_view - 3.0 * delta);
     // let diff = shadow_proj_pos.z - (shadow_depth + 0.001);
 
-    // if debug {
-    //     println!("diff: {diff}");
-    // }
+    if debug {
+        println!("diff: {diff}");
+    }
 
-    if diff > 0.0 { // TODO: add a variable amount proportional to distance from cam
+    if diff < 0.0 { // TODO: add a variable amount proportional to distance from cam
         0.0
     } else {
         1.0

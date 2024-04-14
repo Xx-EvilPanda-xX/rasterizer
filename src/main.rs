@@ -175,7 +175,7 @@ fn start_interactive(mut config: Config<'static>) {
                 window.set_title(&format!("Renderer | {} FPS", (1.0 / frame_time).trunc()));
 
                 // vertex shader + misc
-                let (model, view, proj, shadow_view, shadow_proj) = get_matrices(&config, Some(&camera));
+                let (model, view, proj, shadow_view, shadow_proj, shadow_perspective) = get_matrices(&config, Some(&camera));
 
                 let uniforms = renderer::Uniforms {
                     model,
@@ -200,7 +200,7 @@ fn start_interactive(mut config: Config<'static>) {
                     shadow_mode: config.shadow_mode,
                     shadow_buf_width: config.shadow_buf_width,
                     shadow_buf_height: config.shadow_buf_height,
-                    tan_theta: (config.fov.to_radians() / config.height as f64).tan(), // tan of the angle between two pixels
+                    shadow_perspective,
                     tex_sample_lerp: config.tex_sample_lerp,
                     wireframe: hold_wireframe,
                 };
@@ -363,7 +363,7 @@ fn start_interactive(mut config: Config<'static>) {
             }
 
             if input.key_held(KeyCode::KeyF) {
-                println!("Camera position: ({}, {}, {})", camera.loc.x, camera.loc.y, camera.loc.z);
+                println!("Camera position: ({}, {}, {}) | Camera yaw, pitch: ({}, {})", camera.loc.x, camera.loc.y, camera.loc.z, camera.yaw, camera.pitch);
             }
 
             if input.key_held(KeyCode::KeyV) {
@@ -397,18 +397,12 @@ fn clear(buf: &mut Buffer, color: [u8; 3]) {
 fn color_from_shadow(buf: &Buffer, frame: &mut [u8], dims: (u32, u32)) {
     for y in 0..dims.1 - 10 {
         for x in 0..dims.0 - 10 {
-            if x % 2 == 0 && y % 2 == 0 {
-                let index1 = (((y) * dims.0) + (x)) as usize;
-                let index = (((y / 4) * dims.0) + (x / 2)) as usize;
+            let index = (y * dims.0 + x) as usize;
 
-                if index >= 1000000 {
-                    continue;
-                }
-                frame[index * 4] = (buf.shadow_depth[index1] * 255.0) as u8;
-                frame[index * 4 + 1] = (buf.shadow_depth[index1] * 255.0) as u8;
-                frame[index * 4 + 2] = (buf.shadow_depth[index1] * 255.0) as u8;
-                frame[index * 4 + 3] = renderer::FULLY_OPAQUE;
-            }
+            frame[index * 4] = (buf.shadow_depth[index] * 255.0) as u8;
+            frame[index * 4 + 1] = (buf.shadow_depth[index] * 255.0) as u8;
+            frame[index * 4 + 2] = (buf.shadow_depth[index] * 255.0) as u8;
+            frame[index * 4 + 3] = renderer::FULLY_OPAQUE;
         }
     }
 }
@@ -568,7 +562,7 @@ fn render_to_image(config: &Config, save_name: &str) {
 
     let dims = (config.width, config.height);
 
-    let (model, view, proj, shadow_view, shadow_proj) = get_matrices(&config, None);
+    let (model, view, proj, shadow_view, shadow_proj, shadow_perspective) = get_matrices(&config, None);
     let uniforms = renderer::Uniforms {
         model,
         view,
@@ -592,12 +586,10 @@ fn render_to_image(config: &Config, save_name: &str) {
         shadow_mode: config.shadow_mode,
         shadow_buf_width: config.shadow_buf_width,
         shadow_buf_height: config.shadow_buf_height,
-        tan_theta: (config.fov.to_radians() / config.height as f64).tan(), // tan of the angle between two pixels
+        shadow_perspective,
         tex_sample_lerp: config.tex_sample_lerp,
         wireframe: config.wireframe,
     };
-
-    println!("{}", uniforms.tan_theta.atan().to_degrees());
 
     let tri_count = config.triangles.len();
 
@@ -743,9 +735,9 @@ fn get_tex(mat: &str) -> Option<RgbaImage> {
     None
 }
 
-fn get_matrices(config: &Config, camera: Option<&Camera>) -> (Mat4f, Mat4f, Mat4f, Mat4f, Mat4f) {
+fn get_matrices(config: &Config, camera: Option<&Camera>) -> (Mat4f, Mat4f, Mat4f, Mat4f, Mat4f, Option<Perspective>) {
     if config.legacy {
-        return (Mat4f::new(), Mat4f::new(), Mat4f::new(), Mat4f::new(), Mat4f::new());
+        return (Mat4f::new(), Mat4f::new(), Mat4f::new(), Mat4f::new(), Mat4f::new(), None);
     }
 
     let trans = Mat4f::from_trans_scale(config.trans_x, config.trans_y, config.trans_z, config.scale);
@@ -772,14 +764,14 @@ fn get_matrices(config: &Config, camera: Option<&Camera>) -> (Mat4f, Mat4f, Mat4
     let perspective = math::get_perspective(config.fov, config.width as f64 / config.height as f64, config.n, config.f);
     let proj = math::frustum(&perspective);
 
-    let shadow_proj = if config.shadow_mode == 2 {
+    let (shadow_proj, shadow_perspective) = if config.shadow_mode == 2 {
         let perspective = math::get_perspective(config.shadow_render_fov, config.shadow_buf_width as f64 / config.shadow_buf_height as f64, config.n, config.f); // NOTE: careful with n and f
-        math::frustum(&perspective)
+        (math::frustum(&perspective), Some(perspective))
     } else {
-        Mat4f::new()
+        (Mat4f::new(), None)
     };
 
-    (model, view, proj, shadow_view, shadow_proj)
+    (model, view, proj, shadow_view, shadow_proj, shadow_perspective)
 }
 
 // processed_tris will be filled with the output of the vertex shader

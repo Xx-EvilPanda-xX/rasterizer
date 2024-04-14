@@ -320,13 +320,14 @@ fn row_col_mul(m1: &Mat4f, m2: &Mat4f, row: usize, col: usize) -> f64 {
     out
 }
 
+#[derive(Default)]
 pub struct Perspective {
-    n: f64,
-    f: f64,
-    r: f64,
-    l: f64,
-    t: f64,
-    b: f64,
+    pub n: f64,
+    pub f: f64,
+    pub r: f64,
+    pub l: f64,
+    pub t: f64,
+    pub b: f64,
 }
 
 // calculate n, f, r, l, t, and b from fov, aspect, n, and f
