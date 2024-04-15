@@ -691,9 +691,7 @@ fn pixel_shader(tri: &Triangle, occ: &[[Point3d; 3]], shadow_depth: &[f64], inv_
         (norm, pix_world_pos, base_color)
     };
 
-    let debug = x1 == 10 && y1 == 11300;
-
-    let (ambient, diffuse, specular) = calc_lighting(&norm, &pix_world_pos, u, occ, shadow_depth, debug);
+    let (ambient, diffuse, specular) = calc_lighting(&norm, &pix_world_pos, u, occ, shadow_depth);
     let ambient = mul_color(&base_color, ambient);
     let diffuse = mul_color(&base_color, diffuse);
     let specular = mul_color(&SPEC_COLOR, specular);
@@ -703,7 +701,7 @@ fn pixel_shader(tri: &Triangle, occ: &[[Point3d; 3]], shadow_depth: &[f64], inv_
     color
 }
 
-fn calc_lighting(norm: &Vec3f, pix_pos: &Point3d, u: &Uniforms, occ: &[[Point3d; 3]], shadow_depth: &[f64], debug: bool) -> (f64, f64, f64) {
+fn calc_lighting(norm: &Vec3f, pix_pos: &Point3d, u: &Uniforms, occ: &[[Point3d; 3]], shadow_depth: &[f64]) -> (f64, f64, f64) {
     // pixel to light
     let light_dir = (u.light_pos.into_vec() - pix_pos.into_vec()).normalize();
 
@@ -722,7 +720,7 @@ fn calc_lighting(norm: &Vec3f, pix_pos: &Point3d, u: &Uniforms, occ: &[[Point3d;
     let shadow = match u.shadow_mode {
         0 => 1.0,
         1 => perfect_shadow(occ, &u.light_pos, pix_pos),
-        2 => approx_shadow(shadow_depth, u, pix_pos, norm, debug),
+        2 => approx_shadow(shadow_depth, u, pix_pos),
         _ => panic!("Invalid shadow mode"),
     };
 
@@ -752,7 +750,7 @@ fn perfect_shadow(occ: &[[Point3d; 3]], light_pos: &Point3d, pix_pos: &Point3d) 
     shadow
 }
 
-fn approx_shadow(shadow_depth: &[f64], u: &Uniforms, pix_pos: &Point3d, norm: &Vec3f, debug: bool) -> f64 {
+fn approx_shadow(shadow_depth: &[f64], u: &Uniforms, pix_pos: &Point3d) -> f64 {
 
     // position of the pixel in the clip space of the light source
     let shadow_view_pos = mul_point_matrix(pix_pos, &u.shadow_view);
@@ -763,10 +761,40 @@ fn approx_shadow(shadow_depth: &[f64], u: &Uniforms, pix_pos: &Point3d, norm: &V
     }
 
     // retrieve z of the closest pixel to the camera at that x,y
-    let x = (((shadow_proj_pos.x + 1.0) / 2.0) * u.shadow_buf_width as f64) as usize;
-    let y = (((shadow_proj_pos.y + 1.0) / 2.0) * u.shadow_buf_height as f64) as usize;
-    let shadow_depth = shadow_depth[(y * u.shadow_buf_width as usize) + x];
+    let x = ((shadow_proj_pos.x + 1.0) / 2.0) * u.shadow_buf_width as f64;
+    let y = ((shadow_proj_pos.y + 1.0) / 2.0) * u.shadow_buf_height as f64;
+    let t = (x as usize, y as usize);
+    let t_x = (x as usize + 1, y as usize);
+    let t_y = (x as usize, y as usize + 1);
+    let t_xy = (x as usize + 1, y as usize + 1);
 
+    let get_depth_checked = |(x, y)| {
+        if x >= u.shadow_buf_width as usize || y >= u.shadow_buf_height as usize {
+            return 0.0;
+        }
+
+        shadow_depth[(y * u.shadow_buf_width as usize) + x]
+    };
+
+    // the four texels we care about
+    let this = get_depth_checked(t);
+    let this_x = get_depth_checked(t_x);
+    let this_y = get_depth_checked(t_y);
+    let this_xy = get_depth_checked(t_xy);
+
+    // how close our pixel to the bounds of the texel
+    let dx = 1.0 - ((x + 1.0).trunc() - x);
+    let dy = 1.0 - ((y + 1.0).trunc() - y);
+
+    // color at the lerped x values
+    let lerp_x_low = lerp(this, this_x, dx);
+    let lerp_x_high = lerp(this_y, this_xy, dx);
+
+    // let shadow_depth = shadow_depth[(y as usize * u.shadow_buf_width as usize) + x as usize];
+    let shadow_depth = lerp(lerp_x_low, lerp_x_high, dy);
+
+    // failed approach to compensate for shadow acne without peterpanning. didn't work. math might still be useful.
+    /*
     if debug {
         println!("\n\nshadow_depth: {shadow_depth}");
     }
@@ -813,14 +841,12 @@ fn approx_shadow(shadow_depth: &[f64], u: &Uniforms, pix_pos: &Point3d, norm: &V
 
     // println!("{}", delta);
 
-    let diff = pix_pos_view.z - (shadow_depth_view - 3.0 * delta);
-    // let diff = shadow_proj_pos.z - (shadow_depth + 0.001);
+    */
 
-    if debug {
-        println!("diff: {diff}");
-    }
+    // let diff = pix_pos_view.z - (shadow_depth_view - 3.0 * delta);
+    let diff = shadow_proj_pos.z - (shadow_depth + 0.0001);
 
-    if diff < 0.0 { // TODO: add a variable amount proportional to distance from cam
+    if diff > 0.0 {
         0.0
     } else {
         1.0
