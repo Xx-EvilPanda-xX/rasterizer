@@ -763,6 +763,15 @@ fn approx_shadow(shadow_depth: &[f64], u: &Uniforms, pix_pos: &Point3d) -> f64 {
     // retrieve z of the closest pixel to the camera at that x,y
     let x = ((shadow_proj_pos.x + 1.0) / 2.0) * u.shadow_buf_width as f64;
     let y = ((shadow_proj_pos.y + 1.0) / 2.0) * u.shadow_buf_height as f64;
+
+    let radius = u.shadow_buf_width.min(u.shadow_buf_height) as f64 / 2.0;
+
+    let x1 = x - u.shadow_buf_width as f64 / 2.0;
+    let y1 = y - u.shadow_buf_height as f64 / 2.0;
+    if x1 * x1 + y1 * y1 > radius * radius {
+        return 0.0;
+    }
+
     let t = (x as usize, y as usize);
     let t_x = (x as usize + 1, y as usize);
     let t_y = (x as usize, y as usize + 1);
@@ -844,7 +853,7 @@ fn approx_shadow(shadow_depth: &[f64], u: &Uniforms, pix_pos: &Point3d) -> f64 {
     */
 
     // let diff = pix_pos_view.z - (shadow_depth_view - 3.0 * delta);
-    let diff = shadow_proj_pos.z - (shadow_depth + 0.0001);
+    let diff = shadow_proj_pos.z - (shadow_depth + 0.00005);
 
     if diff > 0.0 {
         0.0
